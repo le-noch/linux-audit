@@ -66,8 +66,9 @@ Options:
   -u, --user USER     Utilisateur SSH (défaut: root)
   -p, --port PORT     Port SSH (défaut: 22)
   -i, --identity KEY  Fichier de clé SSH
-  -o, --output FILE   Génère un rapport HTML (fichier .html)
   -h, --help          Affiche l'aide
+
+Un rapport HTML est automatiquement généré: YYYYMMDD-Hostname-audit.html
 ```
 
 ### Exemples
@@ -75,6 +76,7 @@ Options:
 ```bash
 # Connexion basique en root
 ./linux-audit.sh serveur.example.com
+# Génère automatiquement: 20250125-webserver01-audit.html
 
 # Connexion avec un utilisateur spécifique
 ./linux-audit.sh -u admin serveur.example.com
@@ -82,12 +84,9 @@ Options:
 # Connexion avec clé SSH et port personnalisé
 ./linux-audit.sh -u admin -i ~/.ssh/id_rsa -p 2222 192.168.1.100
 
-# Sauvegarder le rapport dans un fichier texte
+# Sauvegarder le rapport texte dans un fichier
 ./linux-audit.sh serveur.example.com > rapport-serveur.txt
 ./linux-audit.sh serveur.example.com | tee rapport-serveur.txt
-
-# Générer un rapport HTML
-./linux-audit.sh -o rapport.html serveur.example.com
 ```
 
 ## Informations collectées
@@ -147,6 +146,25 @@ Le script analyse les métriques et génère des alertes selon ces seuils:
 Les alertes sont affichées en couleur dans le terminal:
 - **Jaune** : Warning
 - **Rouge** : Critique
+
+## Rapport HTML
+
+Un rapport HTML est **automatiquement généré** à chaque exécution du script:
+
+- Format du nom: `YYYYMMDD-Hostname-audit.html`
+- Exemple: `20250125-webserver01-audit.html`
+
+Le rapport HTML inclut:
+- Design moderne avec thème sombre
+- Barres de progression colorées pour les métriques
+- **Visualisation mémoire détaillée** avec couleurs distinctes pour:
+  - RAM réellement utilisée (rose)
+  - Cache (bleu)
+  - Buffers (cyan)
+  - RAM libre
+- Tableaux pour les disques, processus et réseau
+- Alertes avec badges colorés (critique/warning/ok)
+- Responsive design pour mobile et desktop
 
 ## Fichier SAR
 

@@ -68,14 +68,14 @@ usage() {
     echo "  -u, --user USER     Utilisateur SSH (defaut: root)"
     echo "  -p, --port PORT     Port SSH (defaut: 22)"
     echo "  -i, --identity KEY  Fichier de cle SSH"
-    echo "  -o, --output FILE   Genere un rapport HTML (fichier .html)"
     echo "  -h, --help          Affiche cette aide"
     echo ""
     echo "Exemples:"
     echo "  $0 serveur.example.com"
     echo "  $0 -u admin -p 2222 192.168.1.100"
     echo "  $0 -u admin -i ~/.ssh/id_rsa serveur.example.com"
-    echo "  $0 -o rapport.html serveur.example.com"
+    echo ""
+    echo "Un rapport HTML est automatiquement genere: YYYYMMDD-Hostname-audit.html"
     exit 1
 }
 
@@ -292,6 +292,17 @@ html_init() {
         .progress-ok { background: linear-gradient(90deg, #2ed573, #7bed9f); }
         .progress-warn { background: linear-gradient(90deg, #ffc107, #ffda79); }
         .progress-crit { background: linear-gradient(90deg, #ff4757, #ff6b81); }
+        .progress-stacked { display: flex; height: 100%; }
+        .progress-used { background: linear-gradient(90deg, #e84393, #fd79a8); border-radius: 4px 0 0 4px; }
+        .progress-cache { background: linear-gradient(90deg, #0984e3, #74b9ff); }
+        .progress-buffer { background: linear-gradient(90deg, #00cec9, #81ecec); border-radius: 0 4px 4px 0; }
+        .memory-legend { display: flex; gap: 20px; margin-top: 10px; flex-wrap: wrap; }
+        .legend-item { display: flex; align-items: center; gap: 6px; font-size: 0.85em; }
+        .legend-color { width: 14px; height: 14px; border-radius: 3px; }
+        .legend-used { background: linear-gradient(90deg, #e84393, #fd79a8); }
+        .legend-cache { background: linear-gradient(90deg, #0984e3, #74b9ff); }
+        .legend-buffer { background: linear-gradient(90deg, #00cec9, #81ecec); }
+        .legend-free { background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.3); }
         .footer {
             text-align: center;
             padding: 20px;
@@ -715,19 +726,49 @@ collect_memory_info() {
 
     # HTML output
     if [ -n "$HTML_OUTPUT" ]; then
+        # Calcul des pourcentages pour la barre empilee
+        local used_real_mb=$((mem_used_mb - mem_buffers_mb - mem_cached_mb))
+        if [ "$used_real_mb" -lt 0 ]; then
+            used_real_mb=$mem_used_mb
+        fi
+        local used_real_percent=$((used_real_mb * 100 / mem_total_mb))
+        local buffers_percent=$((mem_buffers_mb * 100 / mem_total_mb))
+        local cached_percent=$((mem_cached_mb * 100 / mem_total_mb))
+
         html_section_start "Memoire"
         html_info_start
         html_info_row "RAM Totale" "${mem_total_mb} MB"
         html_info_end
-        html_append "            <div class=\"info-grid\" style=\"margin-top: 10px;\">
+
+        # Barre de progression empilee avec couleurs distinctes
+        html_append "            <div style=\"margin: 15px 0;\">
+                <div style=\"display: flex; justify-content: space-between; margin-bottom: 5px;\">
+                    <span class=\"info-label\">Utilisation RAM</span>
+                    <span class=\"info-value\">${mem_used_mb} MB / ${mem_total_mb} MB (${mem_used_percent}%)</span>
+                </div>
+                <div class=\"progress-bar\" style=\"height: 20px;\">
+                    <div class=\"progress-stacked\">
+                        <div class=\"progress-used\" style=\"width: ${used_real_percent}%;\"></div>
+                        <div class=\"progress-cache\" style=\"width: ${cached_percent}%;\"></div>
+                        <div class=\"progress-buffer\" style=\"width: ${buffers_percent}%;\"></div>
+                    </div>
+                </div>
+                <div class=\"memory-legend\">
+                    <div class=\"legend-item\"><div class=\"legend-color legend-used\"></div><span>Utilisee: ${used_real_mb} MB</span></div>
+                    <div class=\"legend-item\"><div class=\"legend-color legend-cache\"></div><span>Cache: ${mem_cached_mb} MB</span></div>
+                    <div class=\"legend-item\"><div class=\"legend-color legend-buffer\"></div><span>Buffers: ${mem_buffers_mb} MB</span></div>
+                    <div class=\"legend-item\"><div class=\"legend-color legend-free\"></div><span>Libre: ${mem_free_mb} MB</span></div>
+                </div>
+            </div>
 "
-        html_progress_row "RAM Utilisee" "${mem_used_mb} MB (${mem_used_percent}%)" "$mem_used_percent" "$mem_status"
-        html_info_end
-        html_info_start
-        html_info_row "RAM Libre" "${mem_free_mb} MB"
-        html_info_row "Buffers" "${mem_buffers_mb} MB"
-        html_info_row "Cached" "${mem_cached_mb} MB"
-        html_info_end
+
+        # Alerte si necessaire
+        if [ "$mem_used_percent" -ge "$THRESH_RAM_CRIT" ] 2>/dev/null; then
+            html_alert "critical" "RAM utilisee a ${mem_used_percent}% (seuil critique: ${THRESH_RAM_CRIT}%)"
+        elif [ "$mem_used_percent" -ge "$THRESH_RAM_WARN" ] 2>/dev/null; then
+            html_alert "warning" "RAM utilisee a ${mem_used_percent}% (seuil warning: ${THRESH_RAM_WARN}%)"
+        fi
+
         html_section_end
     fi
 }
@@ -1301,10 +1342,6 @@ parse_arguments() {
                 SSH_KEY="$2"
                 shift 2
                 ;;
-            -o|--output)
-                HTML_OUTPUT="$2"
-                shift 2
-                ;;
             -h|--help)
                 usage
                 ;;
@@ -1348,13 +1385,12 @@ main() {
 
     print_success "Connexion SSH etablie"
 
-    # Initialiser le rapport HTML si demande
-    if [ -n "$HTML_OUTPUT" ]; then
-        html_init "$REMOTE_HOST" "$(date '+%Y-%m-%d %H:%M:%S')"
-    fi
-
     # Collecte des informations
     collect_system_info
+
+    # Initialiser le rapport HTML automatiquement (apres collect_system_info pour avoir REMOTE_HOSTNAME)
+    HTML_OUTPUT="${TIMESTAMP}-${REMOTE_HOSTNAME}-audit.html"
+    html_init "$REMOTE_HOSTNAME" "$(date '+%Y-%m-%d %H:%M:%S')"
     collect_cpu_info
     collect_memory_info
     collect_swap_info
@@ -1370,10 +1406,8 @@ main() {
     print_alert_summary
 
     # Finaliser et ecrire le rapport HTML
-    if [ -n "$HTML_OUTPUT" ]; then
-        html_finish
-        write_html_report
-    fi
+    html_finish
+    write_html_report
 
     # Pied de page
     echo ""
