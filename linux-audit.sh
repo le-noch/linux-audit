@@ -505,14 +505,11 @@ generate_cpu_sar_chart() {
         done
 
         if [ -n \"\$today_file\" ]; then
+            # LC_ALL=C garantit format US (decimales avec point, pas de AM/PM en 24h)
             LC_ALL=C sar -u -f \"\$today_file\" 2>/dev/null | grep -E '^[0-9]{2}:[0-9]{2}:[0-9]{2}' | grep -v 'CPU' | awk '{
-                # Gerer format avec ou sans AM/PM
-                if (\$2 ~ /^(AM|PM)$/) {
-                    print \$1\"|\"\$4\"|\"\$5\"|\"\$6\"|\"\$7\"|\"\$9
-                } else {
-                    print \$1\"|\"\$3\"|\"\$4\"|\"\$5\"|\"\$6\"|\"\$8
-                }
-            }' | sed 's/,/./g' | tail -144
+                # Format 24h sans AM/PM avec LC_ALL=C
+                print \$1\"|\"\$3\"|\"\$4\"|\"\$5\"|\"\$6\"|\"\$8
+            }' | tail -144
         fi
     ")
 
@@ -1564,25 +1561,17 @@ analyze_sar_io_history() {
     # Support format ancien (sa01) et nouveau (sa20260125)
     io_anomalies=$(ssh_exec "
         for sarfile in \$(ls -rt ${sar_path}/sa[0-9][0-9] ${sar_path}/sa[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9] 2>/dev/null); do
-            # Extraire la date du fichier et convertir en DD/MM/YYYY
-            rawdate=\$(LANG=C sar -d -f \$sarfile 2>/dev/null | head -1 | awk '{print \$4}')
-            # Convertir MM/DD/YYYY, MM/DD/YY ou YYYY-MM-DD en DD/MM/YYYY
-            if echo \"\$rawdate\" | grep -qE '^[0-9]{4}-'; then
-                # Format YYYY-MM-DD
-                filedate=\$(echo \"\$rawdate\" | awk -F'-' '{print \$3\"/\"\$2\"/\"\$1}')
-            elif echo \"\$rawdate\" | grep -qE '^[0-9]{2}/[0-9]{2}/[0-9]{2,4}'; then
-                # Format MM/DD/YY ou MM/DD/YYYY -> DD/MM/YYYY
-                filedate=\$(echo \"\$rawdate\" | awk -F'/' '{
-                    year=\$3
-                    if (length(year)==2) year=\"20\"year
-                    print \$2\"/\"\$1\"/\"year
-                }')
-            else
-                filedate=\"\$rawdate\"
-            fi
+            # Extraire la date du fichier (format US avec LC_ALL=C: MM/DD/YY)
+            rawdate=\$(LC_ALL=C sar -d -f \$sarfile 2>/dev/null | head -1 | awk '{print \$4}')
+            # Convertir MM/DD/YY en DD/MM/YYYY (format FR)
+            filedate=\$(echo \"\$rawdate\" | awk -F'/' '{
+                year=\$3
+                if (length(year)==2) year=\"20\"year
+                print \$2\"/\"\$1\"/\"year
+            }')
 
             # Analyser chaque ligne de donnees disk
-            LANG=C sar -d -f \$sarfile 2>/dev/null | grep -E '^[0-9]{2}:[0-9]{2}:[0-9]{2}' | grep -v 'DEV' | while read line; do
+            LC_ALL=C sar -d -f \$sarfile 2>/dev/null | grep -E '^[0-9]{2}:[0-9]{2}:[0-9]{2}' | grep -v 'DEV' | while read line; do
                 time=\$(echo \"\$line\" | awk '{print \$1}')
                 ampm=\$(echo \"\$line\" | awk '{print \$2}')
                 dev=\$(echo \"\$line\" | awk '{print \$3}')
@@ -1665,7 +1654,8 @@ collect_sar_data() {
 
             # Executer la commande sar sur tous les fichiers et compresser
             # Support format ancien (sa01) et nouveau (sa20260125)
-            ssh_exec "for i in \$(ls -rt ${sar_path}/sa[0-9][0-9] ${sar_path}/sa[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9] 2>/dev/null); do LANG=C sar -A -f \$i 2>/dev/null; done | gzip -c" > "$output_file"
+            # LC_ALL=C garantit un format US (dates MM/DD/YY, decimales avec point)
+            ssh_exec "for i in \$(ls -rt ${sar_path}/sa[0-9][0-9] ${sar_path}/sa[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9] 2>/dev/null); do LC_ALL=C sar -A -f \$i 2>/dev/null; done | gzip -c" > "$output_file"
 
             if [ -s "$output_file" ]; then
                 file_size=$(ls -lh "$output_file" | awk '{print $5}')
