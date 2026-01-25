@@ -310,9 +310,10 @@ html_init() {
             color: #666;
             font-size: 0.9em;
         }
+        .table-process th:nth-child(3), .table-process th:nth-child(4) { text-align: right; }
         .table-process td:nth-child(3), .table-process td:nth-child(4) { text-align: right; }
         .table-process td { font-family: monospace; font-size: 0.9em; }
-        .table-process td:nth-child(1) { font-family: inherit; }
+        .table-process td:nth-child(1), .table-process td:nth-child(2) { font-family: inherit; }
         .table-process td:nth-child(5) { font-family: inherit; }
         @media (max-width: 768px) {
             .info-grid { grid-template-columns: 1fr; }
@@ -1390,13 +1391,17 @@ analyze_sar_io_history() {
         for sarfile in \$(ls -rt ${sar_path}/sa[0-9][0-9] ${sar_path}/sa[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9] 2>/dev/null); do
             # Extraire la date du fichier et convertir en DD/MM/YYYY
             rawdate=\$(LANG=C sar -d -f \$sarfile 2>/dev/null | head -1 | awk '{print \$4}')
-            # Convertir MM/DD/YYYY ou YYYY-MM-DD en DD/MM/YYYY
+            # Convertir MM/DD/YYYY, MM/DD/YY ou YYYY-MM-DD en DD/MM/YYYY
             if echo \"\$rawdate\" | grep -qE '^[0-9]{4}-'; then
                 # Format YYYY-MM-DD
                 filedate=\$(echo \"\$rawdate\" | awk -F'-' '{print \$3\"/\"\$2\"/\"\$1}')
-            elif echo \"\$rawdate\" | grep -qE '^[0-9]{2}/[0-9]{2}/[0-9]{4}'; then
-                # Format MM/DD/YYYY -> DD/MM/YYYY
-                filedate=\$(echo \"\$rawdate\" | awk -F'/' '{print \$2\"/\"\$1\"/\"\$3}')
+            elif echo \"\$rawdate\" | grep -qE '^[0-9]{2}/[0-9]{2}/[0-9]{2,4}'; then
+                # Format MM/DD/YY ou MM/DD/YYYY -> DD/MM/YYYY
+                filedate=\$(echo \"\$rawdate\" | awk -F'/' '{
+                    year=\$3
+                    if (length(year)==2) year=\"20\"year
+                    print \$2\"/\"\$1\"/\"year
+                }')
             else
                 filedate=\"\$rawdate\"
             fi
