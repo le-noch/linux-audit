@@ -395,14 +395,15 @@ html_progress_row() {
 
 html_table_start() {
     local headers="$1"  # comma-separated headers
-    html_append "            <table>
-                <thead><tr>
-"
-    echo "$headers" | tr ',' '\n' | while read header; do
-        html_append "                    <th>${header}</th>
+    local header_html=""
+    local IFS=','
+    for header in $headers; do
+        header_html="${header_html}                    <th>${header}</th>
 "
     done
-    html_append "                </tr></thead>
+    html_append "            <table>
+                <thead><tr>
+${header_html}                </tr></thead>
                 <tbody>
 "
 }
@@ -411,16 +412,17 @@ html_table_row() {
     local cells="$1"  # pipe-separated cells
     local class="$2"
     local class_attr=""
+    local cell_html=""
     if [ -n "$class" ]; then
         class_attr=" class=\"${class}\""
     fi
-    html_append "                <tr${class_attr}>
-"
-    echo "$cells" | tr '|' '\n' | while read cell; do
-        html_append "                    <td>${cell}</td>
+    local IFS='|'
+    for cell in $cells; do
+        cell_html="${cell_html}                    <td>${cell}</td>
 "
     done
-    html_append "                </tr>
+    html_append "                <tr${class_attr}>
+${cell_html}                </tr>
 "
 }
 
@@ -948,7 +950,8 @@ collect_disk_info() {
         html_section_start "Disques et Systemes de Fichiers"
         html_table_start "Filesystem,Taille,Utilise,Disponible,Usage,Statut"
 
-        echo "$df_output" | while read line; do
+        while IFS= read -r line; do
+            [ -z "$line" ] && continue
             local fs=$(echo "$line" | awk '{print $1}')
             local size=$(echo "$line" | awk '{print $2}')
             local used=$(echo "$line" | awk '{print $3}')
@@ -966,7 +969,7 @@ collect_disk_info() {
             fi
 
             html_table_row "${mount}|${size}|${used}|${avail}|${use_percent}%|${status_badge}"
-        done
+        done <<< "$df_output"
 
         html_table_end
         html_section_end
@@ -975,11 +978,13 @@ collect_disk_info() {
         html_section_start "Statistiques I/O Disques"
         if [ -n "$diskstats" ]; then
             html_table_start "Device,Lectures,Ecritures,IO (ms)"
-            echo "$diskstats" | awk '$3 ~ /^(sd[a-z]|vd[a-z]|nvme[0-9]+n[0-9]+|xvd[a-z])$/ {
+            local io_rows=$(echo "$diskstats" | awk '$3 ~ /^(sd[a-z]|vd[a-z]|nvme[0-9]+n[0-9]+|xvd[a-z])$/ {
                 print $3 "|" $4 "|" $8 "|" $13
-            }' | while read row; do
+            }')
+            while IFS= read -r row; do
+                [ -z "$row" ] && continue
                 html_table_row "$row"
-            done
+            done <<< "$io_rows"
             html_table_end
         else
             html_append "            <p>Aucune statistique I/O disponible</p>
@@ -1050,14 +1055,9 @@ collect_network_info() {
         # IP Addresses
         if [ -n "$ip_output" ]; then
             html_append "            <h3 style=\"color: #a0a0a0; font-size: 1em; margin-bottom: 10px;\">Adresses IP</h3>
-            <pre style=\"background: rgba(0,0,0,0.3); padding: 15px; border-radius: 6px; overflow-x: auto; color: #e8e8e8;\">
-"
-            echo "$ip_output" | while read line; do
-                local escaped=$(html_escape "$line")
-                html_append "${escaped}
-"
-            done
-            html_append "</pre>
+            <pre style=\"background: rgba(0,0,0,0.3); padding: 15px; border-radius: 6px; overflow-x: auto; color: #e8e8e8;\">"
+            local ip_escaped=$(html_escape "$ip_output")
+            html_append "${ip_escaped}</pre>
 "
         fi
 
@@ -1066,7 +1066,8 @@ collect_network_info() {
             html_append "            <h3 style=\"color: #a0a0a0; font-size: 1em; margin: 15px 0 10px 0;\">Statistiques Interfaces</h3>
 "
             html_table_start "Interface,RX,TX"
-            echo "$netdev" | while read line; do
+            while IFS= read -r line; do
+                [ -z "$line" ] && continue
                 local iface=$(echo "$line" | awk -F: '{print $1}' | tr -d ' ')
                 local rx_bytes=$(echo "$line" | awk '{print $2}')
                 local tx_bytes=$(echo "$line" | awk '{print $10}')
@@ -1085,7 +1086,7 @@ collect_network_info() {
                 }')
 
                 html_table_row "${iface}|${rx_human}|${tx_human}"
-            done
+            done <<< "$netdev"
             html_table_end
         fi
 
@@ -1139,7 +1140,8 @@ collect_process_info() {
 "
         html_table_start "User,PID,%CPU,%MEM,Commande"
         if [ -n "$top_cpu" ]; then
-            echo "$top_cpu" | while read line; do
+            while IFS= read -r line; do
+                [ -z "$line" ] && continue
                 local user=$(echo "$line" | awk '{print $1}')
                 local pid=$(echo "$line" | awk '{print $2}')
                 local cpu=$(echo "$line" | awk '{print $3}')
@@ -1147,7 +1149,7 @@ collect_process_info() {
                 local cmd=$(echo "$line" | awk '{print $11}' | cut -c1-40)
                 local escaped_cmd=$(html_escape "$cmd")
                 html_table_row "${user}|${pid}|${cpu}|${mem}|${escaped_cmd}" "process-table"
-            done
+            done <<< "$top_cpu"
         fi
         html_table_end
 
@@ -1156,7 +1158,8 @@ collect_process_info() {
 "
         html_table_start "User,PID,%CPU,%MEM,Commande"
         if [ -n "$top_mem" ]; then
-            echo "$top_mem" | while read line; do
+            while IFS= read -r line; do
+                [ -z "$line" ] && continue
                 local user=$(echo "$line" | awk '{print $1}')
                 local pid=$(echo "$line" | awk '{print $2}')
                 local cpu=$(echo "$line" | awk '{print $3}')
@@ -1164,7 +1167,7 @@ collect_process_info() {
                 local cmd=$(echo "$line" | awk '{print $11}' | cut -c1-40)
                 local escaped_cmd=$(html_escape "$cmd")
                 html_table_row "${user}|${pid}|${cpu}|${mem}|${escaped_cmd}" "process-table"
-            done
+            done <<< "$top_mem"
         fi
         html_table_end
 
@@ -1298,19 +1301,21 @@ print_alert_summary() {
 "
 
         if [ -n "$ALERTS_CRITICAL" ]; then
-            echo "$ALERTS_CRITICAL" | tr '|' '\n' | while read alert; do
+            local alerts_crit=$(echo "$ALERTS_CRITICAL" | tr '|' '\n')
+            while IFS= read -r alert; do
                 if [ -n "$alert" ]; then
                     html_alert "critical" "$alert"
                 fi
-            done
+            done <<< "$alerts_crit"
         fi
 
         if [ -n "$ALERTS_WARNING" ]; then
-            echo "$ALERTS_WARNING" | tr '|' '\n' | while read alert; do
+            local alerts_warn=$(echo "$ALERTS_WARNING" | tr '|' '\n')
+            while IFS= read -r alert; do
                 if [ -n "$alert" ]; then
                     html_alert "warning" "$alert"
                 fi
-            done
+            done <<< "$alerts_warn"
         fi
 
         if [ -z "$ALERTS_CRITICAL" ] && [ -z "$ALERTS_WARNING" ]; then
