@@ -56,6 +56,7 @@ NB_CPUS=1
 DISTRO_NAME=""
 DISTRO_VERSION=""
 REMOTE_HOSTNAME=""
+SAR_IO_ANOMALIES=""
 
 #-------------------------------------------------------------------------------
 # SECTION 2: FONCTIONS UTILITAIRES
@@ -929,20 +930,124 @@ collect_disk_info() {
         fi
     done
 
-    # Statistiques I/O depuis /proc/diskstats
+    # Statistiques I/O temps reel (iostat-like)
     echo ""
-    print_header "STATISTIQUES I/O DISQUES"
+    print_header "STATISTIQUES I/O DISQUES (temps reel - 5 sec)"
 
-    local diskstats=$(ssh_exec "cat /proc/diskstats 2>/dev/null")
+    local iostat_output=""
+    local io_data=""
 
-    if [ -n "$diskstats" ]; then
-        printf "  %-12s %12s %12s %12s\n" "Device" "Reads" "Writes" "IO_ms"
-        printf "  %-12s %12s %12s %12s\n" "------------" "------------" "------------" "------------"
+    # Essayer iostat d'abord (sysstat)
+    if remote_cmd_exists "iostat"; then
+        iostat_output=$(ssh_exec "LANG=C iostat -xdmy 5 1 2>/dev/null | grep -E '^(sd|vd|nvme|xvd|dm-)' | head -20")
+    fi
 
-        # Filtrer seulement les disques principaux (sd*, vd*, nvme*, xvd*)
-        echo "$diskstats" | awk '$3 ~ /^(sd[a-z]|vd[a-z]|nvme[0-9]+n[0-9]+|xvd[a-z])$/ {
-            printf "  %-12s %12s %12s %12s\n", $3, $4, $8, $13
-        }'
+    if [ -n "$iostat_output" ]; then
+        printf "  %-12s %10s %10s %8s %8s %8s\n" "Device" "rMB/s" "wMB/s" "await" "%util" "Statut"
+        printf "  %-12s %10s %10s %8s %8s %8s\n" "------------" "----------" "----------" "--------" "--------" "--------"
+
+        io_data="$iostat_output"
+        echo "$iostat_output" | while read line; do
+            local dev=$(echo "$line" | awk '{print $1}')
+            local rmb=$(echo "$line" | awk '{printf "%.2f", $3}')
+            local wmb=$(echo "$line" | awk '{printf "%.2f", $4}')
+            local await=$(echo "$line" | awk '{printf "%.1f", $10}')
+            local util=$(echo "$line" | awk '{printf "%.1f", $NF}')
+
+            local alert_flag=""
+            local util_int=$(echo "$util" | cut -d. -f1)
+            local await_int=$(echo "$await" | cut -d. -f1)
+
+            if [ -n "$util_int" ] && [ "$util_int" -ge 90 ] 2>/dev/null; then
+                alert_flag="${RED}CRIT${NC}"
+                add_alert_critical "Disque $dev: utilisation a ${util}% (saturation)"
+            elif [ -n "$util_int" ] && [ "$util_int" -ge 70 ] 2>/dev/null; then
+                alert_flag="${YELLOW}WARN${NC}"
+                add_alert_warning "Disque $dev: utilisation a ${util}%"
+            elif [ -n "$await_int" ] && [ "$await_int" -ge 50 ] 2>/dev/null; then
+                alert_flag="${YELLOW}WARN${NC}"
+                add_alert_warning "Disque $dev: latence elevee (await=${await}ms)"
+            fi
+
+            if [ -n "$alert_flag" ]; then
+                printf "  %-12s %10s %10s %8s %8s %b\n" "$dev" "$rmb" "$wmb" "${await}ms" "${util}%" "$alert_flag"
+            else
+                printf "  %-12s %10s %10s %8s %8s\n" "$dev" "$rmb" "$wmb" "${await}ms" "${util}%"
+            fi
+        done
+    else
+        # Fallback: calcul depuis /proc/diskstats (mesure sur 5 secondes)
+        print_info "Note" "iostat non disponible, calcul depuis /proc/diskstats"
+
+        io_data=$(ssh_exec '
+            # Premiere mesure
+            cat /proc/diskstats > /tmp/diskstats1
+            sleep 5
+            # Seconde mesure
+            cat /proc/diskstats > /tmp/diskstats2
+
+            # Calcul des deltas
+            awk '\''
+            NR==FNR {
+                dev[$3]=$3; rd1[$3]=$6; wr1[$3]=$10; io1[$3]=$13; iot1[$3]=$10+$6
+                next
+            }
+            $3 in dev && $3 ~ /^(sd[a-z]|vd[a-z]|nvme[0-9]+n[0-9]+|xvd[a-z]|dm-[0-9]+)$/ {
+                rd_sec = ($6 - rd1[$3]) / 5
+                wr_sec = ($10 - wr1[$3]) / 5
+                rd_mb = rd_sec * 512 / 1048576
+                wr_mb = wr_sec * 512 / 1048576
+                io_ms = $13 - io1[$3]
+                total_io = ($6 - rd1[$3]) + ($10 - wr1[$3])
+                if (total_io > 0) {
+                    await = io_ms / total_io
+                } else {
+                    await = 0
+                }
+                util = (io_ms / 5000) * 100
+                if (util > 100) util = 100
+                printf "%s %.2f %.2f %.1f %.1f\n", $3, rd_mb, wr_mb, await, util
+            }
+            '\'' /tmp/diskstats1 /tmp/diskstats2
+
+            rm -f /tmp/diskstats1 /tmp/diskstats2
+        ')
+
+        if [ -n "$io_data" ]; then
+            printf "  %-12s %10s %10s %8s %8s %8s\n" "Device" "rMB/s" "wMB/s" "await" "%util" "Statut"
+            printf "  %-12s %10s %10s %8s %8s %8s\n" "------------" "----------" "----------" "--------" "--------" "--------"
+
+            echo "$io_data" | while read line; do
+                local dev=$(echo "$line" | awk '{print $1}')
+                local rmb=$(echo "$line" | awk '{print $2}')
+                local wmb=$(echo "$line" | awk '{print $3}')
+                local await=$(echo "$line" | awk '{print $4}')
+                local util=$(echo "$line" | awk '{print $5}')
+
+                local alert_flag=""
+                local util_int=$(echo "$util" | cut -d. -f1)
+                local await_int=$(echo "$await" | cut -d. -f1)
+
+                if [ -n "$util_int" ] && [ "$util_int" -ge 90 ] 2>/dev/null; then
+                    alert_flag="${RED}CRIT${NC}"
+                    add_alert_critical "Disque $dev: utilisation a ${util}% (saturation)"
+                elif [ -n "$util_int" ] && [ "$util_int" -ge 70 ] 2>/dev/null; then
+                    alert_flag="${YELLOW}WARN${NC}"
+                    add_alert_warning "Disque $dev: utilisation a ${util}%"
+                elif [ -n "$await_int" ] && [ "$await_int" -ge 50 ] 2>/dev/null; then
+                    alert_flag="${YELLOW}WARN${NC}"
+                    add_alert_warning "Disque $dev: latence elevee (await=${await}ms)"
+                fi
+
+                if [ -n "$alert_flag" ]; then
+                    printf "  %-12s %10s %10s %8s %8s %b\n" "$dev" "$rmb" "$wmb" "${await}ms" "${util}%" "$alert_flag"
+                else
+                    printf "  %-12s %10s %10s %8s %8s\n" "$dev" "$rmb" "$wmb" "${await}ms" "${util}%"
+                fi
+            done
+        else
+            print_warning "Impossible de collecter les statistiques I/O"
+        fi
     fi
 
     # HTML output
@@ -974,17 +1079,64 @@ collect_disk_info() {
         html_table_end
         html_section_end
 
-        # I/O Stats section
-        html_section_start "Statistiques I/O Disques"
-        if [ -n "$diskstats" ]; then
-            html_table_start "Device,Lectures,Ecritures,IO (ms)"
-            local io_rows=$(echo "$diskstats" | awk '$3 ~ /^(sd[a-z]|vd[a-z]|nvme[0-9]+n[0-9]+|xvd[a-z])$/ {
-                print $3 "|" $4 "|" $8 "|" $13
-            }')
-            while IFS= read -r row; do
-                [ -z "$row" ] && continue
-                html_table_row "$row"
-            done <<< "$io_rows"
+        # I/O Stats section (temps reel)
+        html_section_start "Statistiques I/O Disques (temps reel - 5 sec)"
+        if [ -n "$io_data" ]; then
+            html_table_start "Device,rMB/s,wMB/s,await (ms),%util,Statut"
+
+            if [ -n "$iostat_output" ]; then
+                # Format iostat
+                while IFS= read -r line; do
+                    [ -z "$line" ] && continue
+                    local dev=$(echo "$line" | awk '{print $1}')
+                    local rmb=$(echo "$line" | awk '{printf "%.2f", $3}')
+                    local wmb=$(echo "$line" | awk '{printf "%.2f", $4}')
+                    local await=$(echo "$line" | awk '{printf "%.1f", $10}')
+                    local util=$(echo "$line" | awk '{printf "%.1f", $NF}')
+
+                    local status_badge=""
+                    local util_int=$(echo "$util" | cut -d. -f1)
+                    local await_int=$(echo "$await" | cut -d. -f1)
+
+                    if [ -n "$util_int" ] && [ "$util_int" -ge 90 ] 2>/dev/null; then
+                        status_badge="<span class=\"badge badge-critical\">SATURATION</span>"
+                    elif [ -n "$util_int" ] && [ "$util_int" -ge 70 ] 2>/dev/null; then
+                        status_badge="<span class=\"badge badge-warning\">CHARGE</span>"
+                    elif [ -n "$await_int" ] && [ "$await_int" -ge 50 ] 2>/dev/null; then
+                        status_badge="<span class=\"badge badge-warning\">LATENCE</span>"
+                    else
+                        status_badge="<span class=\"badge badge-ok\">OK</span>"
+                    fi
+
+                    html_table_row "${dev}|${rmb}|${wmb}|${await}|${util}%|${status_badge}"
+                done <<< "$iostat_output"
+            else
+                # Format /proc/diskstats
+                while IFS= read -r line; do
+                    [ -z "$line" ] && continue
+                    local dev=$(echo "$line" | awk '{print $1}')
+                    local rmb=$(echo "$line" | awk '{print $2}')
+                    local wmb=$(echo "$line" | awk '{print $3}')
+                    local await=$(echo "$line" | awk '{print $4}')
+                    local util=$(echo "$line" | awk '{print $5}')
+
+                    local status_badge=""
+                    local util_int=$(echo "$util" | cut -d. -f1)
+                    local await_int=$(echo "$await" | cut -d. -f1)
+
+                    if [ -n "$util_int" ] && [ "$util_int" -ge 90 ] 2>/dev/null; then
+                        status_badge="<span class=\"badge badge-critical\">SATURATION</span>"
+                    elif [ -n "$util_int" ] && [ "$util_int" -ge 70 ] 2>/dev/null; then
+                        status_badge="<span class=\"badge badge-warning\">CHARGE</span>"
+                    elif [ -n "$await_int" ] && [ "$await_int" -ge 50 ] 2>/dev/null; then
+                        status_badge="<span class=\"badge badge-warning\">LATENCE</span>"
+                    else
+                        status_badge="<span class=\"badge badge-ok\">OK</span>"
+                    fi
+
+                    html_table_row "${dev}|${rmb}|${wmb}|${await}|${util}%|${status_badge}"
+                done <<< "$io_data"
+            fi
             html_table_end
         else
             html_append "            <p>Aucune statistique I/O disponible</p>
@@ -1193,6 +1345,78 @@ detect_sar_path() {
     return 1
 }
 
+# Analyse historique des I/O disques depuis SAR
+analyze_sar_io_history() {
+    local sar_path="$1"
+    local io_anomalies=""
+
+    print_header "ANALYSE HISTORIQUE I/O (SAR)"
+
+    if [ -z "$sar_path" ]; then
+        print_warning "Analyse historique non disponible (pas de donnees SAR)"
+        return 1
+    fi
+
+    echo "  Analyse des pics I/O sur l'historique SAR..."
+
+    # Analyser les donnees sar -d pour tous les fichiers disponibles
+    # Chercher les pics: %util > 80% ou await > 30ms
+    io_anomalies=$(ssh_exec "
+        for sarfile in \$(ls -rt ${sar_path}/sa?? 2>/dev/null); do
+            # Extraire la date du fichier
+            filedate=\$(LANG=C sar -d -f \$sarfile 2>/dev/null | head -1 | awk '{print \$4}')
+
+            # Analyser chaque ligne de donnees disk
+            LANG=C sar -d -f \$sarfile 2>/dev/null | grep -E '^[0-9]{2}:[0-9]{2}:[0-9]{2}' | grep -v 'DEV' | while read line; do
+                time=\$(echo \"\$line\" | awk '{print \$1}')
+                ampm=\$(echo \"\$line\" | awk '{print \$2}')
+                dev=\$(echo \"\$line\" | awk '{print \$3}')
+                # Si pas de AM/PM, le device est en position 2
+                if echo \"\$ampm\" | grep -qE '^(sd|vd|nvme|xvd|dm-)'; then
+                    dev=\"\$ampm\"
+                    await=\$(echo \"\$line\" | awk '{print \$8}')
+                    util=\$(echo \"\$line\" | awk '{print \$10}')
+                else
+                    await=\$(echo \"\$line\" | awk '{print \$9}')
+                    util=\$(echo \"\$line\" | awk '{print \$11}')
+                fi
+
+                # Verifier les seuils (util > 80% ou await > 30ms)
+                util_int=\$(echo \"\$util\" | cut -d. -f1)
+                await_int=\$(echo \"\$await\" | cut -d. -f1)
+
+                if [ -n \"\$util_int\" ] && [ \"\$util_int\" -ge 80 ] 2>/dev/null; then
+                    echo \"UTIL|\$filedate|\$time|\$dev|%util=\${util}%|await=\${await}ms\"
+                elif [ -n \"\$await_int\" ] && [ \"\$await_int\" -ge 30 ] 2>/dev/null; then
+                    echo \"AWAIT|\$filedate|\$time|\$dev|%util=\${util}%|await=\${await}ms\"
+                fi
+            done
+        done | sort -t'|' -k5 -rn | head -20
+    ")
+
+    if [ -n "$io_anomalies" ]; then
+        local count=$(echo "$io_anomalies" | wc -l)
+        print_warning "Detecte $count pic(s) I/O anormaux dans l'historique SAR"
+        echo ""
+        printf "  %-12s %-10s %-10s %-12s %-12s\n" "Date" "Heure" "Device" "%util" "await"
+        printf "  %-12s %-10s %-10s %-12s %-12s\n" "------------" "----------" "----------" "------------" "------------"
+
+        echo "$io_anomalies" | while IFS='|' read type date time dev util await; do
+            printf "  %-12s %-10s %-10s %-12s %-12s\n" "$date" "$time" "$dev" "$util" "$await"
+        done
+
+        # Ajouter une alerte globale
+        add_alert_warning "Pics I/O historiques detectes (${count} occurrences) - voir section Analyse SAR"
+    else
+        print_success "Aucun pic I/O anormal detecte dans l'historique SAR"
+    fi
+
+    # Stocker pour HTML
+    SAR_IO_ANOMALIES="$io_anomalies"
+
+    return 0
+}
+
 collect_sar_data() {
     print_header "COLLECTE DONNEES SAR (SYSSTAT)"
 
@@ -1235,6 +1459,9 @@ collect_sar_data() {
                 rm -f "$output_file"
                 sar_available=0
             fi
+
+            # Analyse historique des I/O
+            analyze_sar_io_history "$sar_path"
         fi
     fi
 
@@ -1252,6 +1479,30 @@ collect_sar_data() {
             html_info_row "Note" "sysstat n'est pas installe ou aucun fichier SAR trouve"
         fi
         html_info_end
+
+        # Section analyse I/O historique
+        if [ -n "$SAR_IO_ANOMALIES" ]; then
+            html_append "            <h3 style=\"color: #ff6b6b; font-size: 1em; margin: 20px 0 10px 0;\">Pics I/O Historiques Detectes</h3>
+"
+            html_table_start "Date,Heure,Device,%util,await"
+            while IFS='|' read -r type date time dev util await; do
+                [ -z "$type" ] && continue
+                local row_class=""
+                if [ "$type" = "UTIL" ]; then
+                    html_table_row "${date}|${time}|${dev}|<span style=\"color:#ff4757\">${util}</span>|${await}"
+                else
+                    html_table_row "${date}|${time}|${dev}|${util}|<span style=\"color:#ffc107\">${await}</span>"
+                fi
+            done <<< "$SAR_IO_ANOMALIES"
+            html_table_end
+        elif [ "$sar_available" -eq 1 ]; then
+            html_append "            <div class=\"alert alert-ok\" style=\"margin-top: 15px;\">
+                <span class=\"alert-icon\">&#10004;</span>
+                <span>Aucun pic I/O anormal detecte dans l'historique SAR</span>
+            </div>
+"
+        fi
+
         html_section_end
     fi
 
