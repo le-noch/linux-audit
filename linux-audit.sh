@@ -507,10 +507,10 @@ generate_cpu_sar_chart() {
         done
 
         if [ -n \"\$today_file\" ]; then
-            # LC_ALL=C garantit format US (decimales avec point, pas de AM/PM en 24h)
+            # LC_ALL=C garantit format US (decimales avec point, format 24h)
+            # Colonnes sar -u: \$1=time \$2=CPU \$3=%user \$4=%nice \$5=%system \$6=%iowait \$7=%steal \$8=%idle
             LC_ALL=C sar -u -f \"\$today_file\" 2>/dev/null | grep -E '^[0-9]{2}:[0-9]{2}:[0-9]{2}' | grep -v 'CPU' | awk '{
-                # Format 24h sans AM/PM avec LC_ALL=C: time|user|nice|system|iowait|steal|idle
-                print \$1\"|\"\$3\"|\"\$4\"|\"\$5\"|\"\$6\"|\"\$8\"|\"\$9
+                print \$1\"|\"\$3\"|\"\$4\"|\"\$5\"|\"\$6\"|\"\$7\"|\"\$8
             }' | tail -144
         fi
     ")
