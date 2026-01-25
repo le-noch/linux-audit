@@ -1177,13 +1177,20 @@ collect_network_info() {
     local netdev=$(ssh_exec "cat /proc/net/dev 2>/dev/null | tail -n +3 | grep -v lo:")
 
     if [ -n "$netdev" ]; then
-        printf "  %-12s %15s %15s\n" "Interface" "RX bytes" "TX bytes"
-        printf "  %-12s %15s %15s\n" "------------" "---------------" "---------------"
+        # Recuperer les IPs par interface pour la console
+        local ip_list_console=$(ssh_exec "ip -4 addr show 2>/dev/null | grep -E 'inet ' | awk '{print \$NF, \$2}' | sed 's|/.*||'" 2>/dev/null)
+
+        printf "  %-12s %-18s %15s %15s\n" "Interface" "Adresse IP" "RX bytes" "TX bytes"
+        printf "  %-12s %-18s %15s %15s\n" "------------" "------------------" "---------------" "---------------"
 
         echo "$netdev" | while read line; do
             local iface=$(echo "$line" | awk -F: '{print $1}' | tr -d ' ')
             local rx_bytes=$(echo "$line" | awk '{print $2}')
             local tx_bytes=$(echo "$line" | awk '{print $10}')
+
+            # Trouver l'IP de cette interface
+            local iface_ip=$(echo "$ip_list_console" | grep "^${iface} " | awk '{print $2}' | head -1)
+            [ -z "$iface_ip" ] && iface_ip="-"
 
             # Convertir en format lisible
             local rx_human=$(echo "$rx_bytes" | awk '{
@@ -1199,7 +1206,7 @@ collect_network_info() {
                 else printf "%d B", $1
             }')
 
-            printf "  %-12s %15s %15s\n" "$iface" "$rx_human" "$tx_human"
+            printf "  %-12s %-18s %15s %15s\n" "$iface" "$iface_ip" "$rx_human" "$tx_human"
         done
     fi
 
