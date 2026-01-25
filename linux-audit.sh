@@ -310,7 +310,10 @@ html_init() {
             color: #666;
             font-size: 0.9em;
         }
-        .process-table td:nth-child(3), .process-table td:nth-child(4) { text-align: right; }
+        .table-process td:nth-child(3), .table-process td:nth-child(4) { text-align: right; }
+        .table-process td { font-family: monospace; font-size: 0.9em; }
+        .table-process td:nth-child(1) { font-family: inherit; }
+        .table-process td:nth-child(5) { font-family: inherit; }
         @media (max-width: 768px) {
             .info-grid { grid-template-columns: 1fr; }
             .header h1 { font-size: 1.5em; }
@@ -1213,16 +1216,23 @@ collect_network_info() {
 "
         fi
 
-        # Network Stats
+        # Network Stats avec IP
         if [ -n "$netdev" ]; then
+            # Recuperer les IPs par interface
+            local ip_list=$(ssh_exec "ip -4 addr show 2>/dev/null | grep -E 'inet ' | awk '{print \$NF, \$2}' | sed 's|/.*||'" 2>/dev/null)
+
             html_append "            <h3 style=\"color: #a0a0a0; font-size: 1em; margin: 15px 0 10px 0;\">Statistiques Interfaces</h3>
 "
-            html_table_start "Interface,RX,TX"
+            html_table_start "Interface,Adresse IP,RX,TX"
             while IFS= read -r line; do
                 [ -z "$line" ] && continue
                 local iface=$(echo "$line" | awk -F: '{print $1}' | tr -d ' ')
                 local rx_bytes=$(echo "$line" | awk '{print $2}')
                 local tx_bytes=$(echo "$line" | awk '{print $10}')
+
+                # Trouver l'IP de cette interface
+                local iface_ip=$(echo "$ip_list" | grep "^${iface} " | awk '{print $2}' | head -1)
+                [ -z "$iface_ip" ] && iface_ip="-"
 
                 local rx_human=$(echo "$rx_bytes" | awk '{
                     if ($1 >= 1073741824) printf "%.2f GB", $1/1073741824
@@ -1237,7 +1247,7 @@ collect_network_info() {
                     else printf "%d B", $1
                 }')
 
-                html_table_row "${iface}|${rx_human}|${tx_human}"
+                html_table_row "${iface}|${iface_ip}|${rx_human}|${tx_human}"
             done <<< "$netdev"
             html_table_end
         fi
@@ -1289,6 +1299,7 @@ collect_process_info() {
 
         # Top CPU
         html_append "            <h3 style=\"color: #a0a0a0; font-size: 1em; margin-bottom: 10px;\">Top 5 par CPU</h3>
+            <div class=\"table-process\">
 "
         html_table_start "User,PID,%CPU,%MEM,Commande"
         if [ -n "$top_cpu" ]; then
@@ -1300,13 +1311,16 @@ collect_process_info() {
                 local mem=$(echo "$line" | awk '{print $4}')
                 local cmd=$(echo "$line" | awk '{print $11}' | cut -c1-40)
                 local escaped_cmd=$(html_escape "$cmd")
-                html_table_row "${user}|${pid}|${cpu}|${mem}|${escaped_cmd}" "process-table"
+                html_table_row "${user}|${pid}|${cpu}|${mem}|${escaped_cmd}"
             done <<< "$top_cpu"
         fi
         html_table_end
+        html_append "            </div>
+"
 
         # Top Memory
         html_append "            <h3 style=\"color: #a0a0a0; font-size: 1em; margin: 15px 0 10px 0;\">Top 5 par Memoire</h3>
+            <div class=\"table-process\">
 "
         html_table_start "User,PID,%CPU,%MEM,Commande"
         if [ -n "$top_mem" ]; then
@@ -1318,10 +1332,12 @@ collect_process_info() {
                 local mem=$(echo "$line" | awk '{print $4}')
                 local cmd=$(echo "$line" | awk '{print $11}' | cut -c1-40)
                 local escaped_cmd=$(html_escape "$cmd")
-                html_table_row "${user}|${pid}|${cpu}|${mem}|${escaped_cmd}" "process-table"
+                html_table_row "${user}|${pid}|${cpu}|${mem}|${escaped_cmd}"
             done <<< "$top_mem"
         fi
         html_table_end
+        html_append "            </div>
+"
 
         html_section_end
     fi
@@ -1365,8 +1381,18 @@ analyze_sar_io_history() {
     # Support format ancien (sa01) et nouveau (sa20260125)
     io_anomalies=$(ssh_exec "
         for sarfile in \$(ls -rt ${sar_path}/sa[0-9][0-9] ${sar_path}/sa[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9] 2>/dev/null); do
-            # Extraire la date du fichier
-            filedate=\$(LANG=C sar -d -f \$sarfile 2>/dev/null | head -1 | awk '{print \$4}')
+            # Extraire la date du fichier et convertir en DD/MM/YYYY
+            rawdate=\$(LANG=C sar -d -f \$sarfile 2>/dev/null | head -1 | awk '{print \$4}')
+            # Convertir MM/DD/YYYY ou YYYY-MM-DD en DD/MM/YYYY
+            if echo \"\$rawdate\" | grep -qE '^[0-9]{4}-'; then
+                # Format YYYY-MM-DD
+                filedate=\$(echo \"\$rawdate\" | awk -F'-' '{print \$3\"/\"\$2\"/\"\$1}')
+            elif echo \"\$rawdate\" | grep -qE '^[0-9]{2}/[0-9]{2}/[0-9]{4}'; then
+                # Format MM/DD/YYYY -> DD/MM/YYYY
+                filedate=\$(echo \"\$rawdate\" | awk -F'/' '{print \$2\"/\"\$1\"/\"\$3}')
+            else
+                filedate=\"\$rawdate\"
+            fi
 
             # Analyser chaque ligne de donnees disk
             LANG=C sar -d -f \$sarfile 2>/dev/null | grep -E '^[0-9]{2}:[0-9]{2}:[0-9]{2}' | grep -v 'DEV' | while read line; do
