@@ -1,0 +1,287 @@
+.\" Manpage for linux-audit.sh
+.\" Contact: N/A
+.TH LINUX-AUDIT.SH 1 "Janvier 2025" "1.0" "Manuel utilisateur linux-audit.sh"
+.SH NOM
+linux-audit.sh \- Script de collecte d'informations systeme et performances Linux via SSH
+.SH SYNOPSIS
+.B linux-audit.sh
+[\fB\-u\fR \fIUSER\fR]
+[\fB\-p\fR \fIPORT\fR]
+[\fB\-i\fR \fIKEY\fR]
+.IR hostname_ou_ip
+.br
+.B linux-audit.sh
+[\fB\-h\fR|\fB\-\-help\fR]
+.SH DESCRIPTION
+.B linux-audit.sh
+est un script bash qui se connecte en SSH a un serveur Linux distant pour
+collecter des informations techniques et des donnees de performances.
+Il genere un rapport detaille avec une pre-analyse et des alertes colorees
+pour faciliter les audits d'administration systeme.
+.PP
+Le script est concu pour fonctionner sur differentes distributions Linux
+(RHEL, CentOS, Debian, Ubuntu, Oracle Linux) y compris les versions anciennes
+comme RHEL6. Il utilise uniquement des outils de base couramment disponibles
+et ne necessite pas l'installation de packages supplementaires sur les
+serveurs audites.
+.PP
+Si sysstat est installe sur le serveur distant, le script exporte egalement
+les donnees SAR historiques dans un fichier compresse.
+.SH OPTIONS
+.TP
+.BR \-u ", " \-\-user " " \fIUSER\fR
+Specifie l'utilisateur SSH pour la connexion.
+Par defaut: \fBroot\fR
+.TP
+.BR \-p ", " \-\-port " " \fIPORT\fR
+Specifie le port SSH.
+Par defaut: \fB22\fR
+.TP
+.BR \-i ", " \-\-identity " " \fIKEY\fR
+Specifie le fichier de cle privee SSH a utiliser pour l'authentification.
+.TP
+.BR \-h ", " \-\-help
+Affiche l'aide et quitte.
+.SH INFORMATIONS COLLECTEES
+Le script collecte les categories d'informations suivantes:
+.SS Informations systeme
+.IP \(bu 2
+Hostname et nom de domaine
+.IP \(bu 2
+Distribution et version (detectee via /etc/os-release, /etc/redhat-release, etc.)
+.IP \(bu 2
+Version du kernel
+.IP \(bu 2
+Architecture (x86_64, etc.)
+.IP \(bu 2
+Uptime du systeme
+.IP \(bu 2
+Date et heure systeme
+.SS CPU
+.IP \(bu 2
+Modele du processeur
+.IP \(bu 2
+Nombre de sockets, coeurs par socket, threads
+.IP \(bu 2
+Utilisation CPU en temps reel (mesure sur 1 seconde)
+.IP \(bu 2
+I/O Wait (via vmstat)
+.SS Memoire
+.IP \(bu 2
+RAM totale, utilisee, libre
+.IP \(bu 2
+Buffers et cache
+.IP \(bu 2
+Calcul de la memoire reellement utilisee (compatible MemAvailable et calcul manuel pour kernels anciens)
+.SS Swap
+.IP \(bu 2
+Espace swap total
+.IP \(bu 2
+Swap utilise et libre
+.IP \(bu 2
+Pourcentage d'utilisation
+.SS Load Average
+.IP \(bu 2
+Load average sur 1, 5 et 15 minutes
+.IP \(bu 2
+Nombre de CPUs
+.IP \(bu 2
+Ratio load/CPU (indicateur de charge)
+.SS Disques
+.IP \(bu 2
+Espace disque par systeme de fichiers (df -h)
+.IP \(bu 2
+Statistiques I/O depuis /proc/diskstats (lectures, ecritures, temps I/O)
+.SS Reseau
+.IP \(bu 2
+Interfaces reseau et adresses IP (via ip addr ou ifconfig)
+.IP \(bu 2
+Statistiques RX/TX par interface
+.SS Processus
+.IP \(bu 2
+Top 5 processus par utilisation CPU
+.IP \(bu 2
+Top 5 processus par utilisation memoire
+.SS Donnees SAR (optionnel)
+.IP \(bu 2
+Export complet des donnees sysstat historiques
+.IP \(bu 2
+Fichier compresse au format YYYYMMDD-Hostname-sar.gz
+.SH SEUILS D'ALERTE
+Le script analyse les metriques collectees et genere des alertes selon
+les seuils suivants:
+.PP
+.TS
+center box;
+cb cb cb
+l n n.
+Metrique	Warning	Critique
+_
+RAM utilisee	> 75%	> 85%
+Swap utilise	> 30%	> 50%
+CPU utilisation	> 70%	> 85%
+Load/CPU ratio	> 1.0	> 1.5
+I/O Wait	> 15%	> 25%
+Disque plein	> 80%	> 90%
+.TE
+.PP
+Les alertes sont affichees en couleur:
+.IP \(bu 2
+\fBJaune\fR : Warning (seuil d'attention depasse)
+.IP \(bu 2
+\fBRouge\fR : Critique (seuil critique depasse)
+.SH FICHIERS
+.TP
+.I YYYYMMDD-Hostname-sar.gz
+Fichier compresse contenant les donnees SAR exportees du serveur.
+Genere uniquement si sysstat est installe sur le serveur distant.
+Le fichier est cree dans le repertoire courant.
+.SH EXEMPLES
+Audit basique d'un serveur en tant que root:
+.PP
+.RS
+.nf
+$ linux-audit.sh serveur.example.com
+.fi
+.RE
+.PP
+Audit avec un utilisateur specifique:
+.PP
+.RS
+.nf
+$ linux-audit.sh -u admin serveur.example.com
+.fi
+.RE
+.PP
+Audit avec cle SSH et port personnalise:
+.PP
+.RS
+.nf
+$ linux-audit.sh -u admin -i ~/.ssh/id_rsa -p 2222 192.168.1.100
+.fi
+.RE
+.PP
+Sauvegarder le rapport dans un fichier:
+.PP
+.RS
+.nf
+$ linux-audit.sh serveur.example.com > rapport.txt
+$ linux-audit.sh serveur.example.com 2>&1 | tee rapport.txt
+.fi
+.RE
+.PP
+Auditer plusieurs serveurs:
+.PP
+.RS
+.nf
+$ for host in srv1 srv2 srv3; do
+>   linux-audit.sh $host > rapport-$host.txt
+> done
+.fi
+.RE
+.PP
+Lire le fichier SAR exporte:
+.PP
+.RS
+.nf
+$ zcat 20250125-serveur-sar.gz | less
+$ zcat 20250125-serveur-sar.gz | grep -A 20 "CPU"
+.fi
+.RE
+.SH COMPATIBILITE
+.SS Distributions supportees
+.IP \(bu 2
+Red Hat Enterprise Linux (RHEL) 6, 7, 8, 9
+.IP \(bu 2
+CentOS 6, 7, 8, Stream
+.IP \(bu 2
+Oracle Linux 6, 7, 8
+.IP \(bu 2
+Debian 8, 9, 10, 11, 12
+.IP \(bu 2
+Ubuntu 16.04, 18.04, 20.04, 22.04, 24.04
+.SS Bash
+Le script est compatible avec bash version 3.x et superieure, ce qui permet
+son execution sur des systemes anciens comme RHEL6.
+Les syntaxes specifiques a bash 4+ sont evitees (tableaux associatifs,
+conversions de casse, etc.).
+.SS Chemins SAR
+Le script detecte automatiquement le chemin des fichiers SAR:
+.IP \(bu 2
+/var/log/sa/ (RHEL, CentOS, Oracle Linux)
+.IP \(bu 2
+/var/log/sysstat/ (Debian, Ubuntu)
+.SH CODES DE SORTIE
+.TP
+.B 0
+Succes. L'audit s'est termine normalement.
+.TP
+.B 1
+Erreur. Connexion SSH impossible ou argument obligatoire manquant.
+.SH ENVIRONNEMENT
+.TP
+.B SSH_AUTH_SOCK
+Utilise par l'agent SSH pour l'authentification par cle.
+.SH PREREQUIS
+.SS Machine cliente
+.IP \(bu 2
+bash (version 3.x minimum)
+.IP \(bu 2
+ssh et scp (client OpenSSH)
+.IP \(bu 2
+gzip
+.SS Serveur audite
+.IP \(bu 2
+bash
+.IP \(bu 2
+Acces SSH configure
+.IP \(bu 2
+Outils standard Linux (coreutils)
+.IP \(bu 2
+sysstat (optionnel, pour l'export des donnees SAR)
+.SH PERSONNALISATION
+Les seuils d'alerte peuvent etre modifies en editant les variables
+au debut du script:
+.PP
+.RS
+.nf
+THRESH_RAM_WARN=75
+THRESH_RAM_CRIT=85
+THRESH_SWAP_WARN=30
+THRESH_SWAP_CRIT=50
+THRESH_CPU_WARN=70
+THRESH_CPU_CRIT=85
+THRESH_LOAD_WARN=1.0
+THRESH_LOAD_CRIT=1.5
+THRESH_IOWAIT_WARN=15
+THRESH_IOWAIT_CRIT=25
+THRESH_DISK_WARN=80
+THRESH_DISK_CRIT=90
+.fi
+.RE
+.SH SECURITE
+.IP \(bu 2
+Le script utilise BatchMode=yes pour SSH (pas de prompt interactif)
+.IP \(bu 2
+StrictHostKeyChecking=no est utilise par defaut. Dans un environnement
+sensible, il est recommande de modifier cette option.
+.IP \(bu 2
+Il est recommande d'utiliser l'authentification par cle SSH plutot
+que par mot de passe.
+.IP \(bu 2
+Aucune donnee sensible n'est stockee localement hormis le fichier SAR.
+.SH BOGUES
+Rapporter les bogues a l'auteur ou via le systeme de suivi de bogues
+du projet.
+.SH AUTEUR
+Script genere par Claude (Anthropic), Janvier 2025.
+.SH VOIR AUSSI
+.BR ssh (1),
+.BR scp (1),
+.BR sar (1),
+.BR vmstat (8),
+.BR iostat (1),
+.BR top (1),
+.BR free (1),
+.BR df (1),
+.BR ps (1)

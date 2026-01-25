@@ -1,0 +1,243 @@
+================================================================================
+                         LINUX-AUDIT.SH - README
+           Script de collecte d'informations systeme et performances
+================================================================================
+
+DESCRIPTION
+-----------
+linux-audit.sh est un script bash qui se connecte en SSH a un serveur Linux
+distant pour collecter des informations techniques et des donnees de
+performances. Il genere un rapport avec pre-analyse et alertes colorees
+pour faciliter les audits d'administration systeme.
+
+PREREQUIS
+---------
+Cote client (machine executant le script):
+  - bash (version 3.x ou superieure)
+  - ssh et scp (client OpenSSH)
+  - gzip
+
+Cote serveur (machine auditee):
+  - bash
+  - Acces SSH configure (cle ou mot de passe)
+  - Outils standard Linux (coreutils)
+  - sysstat (optionnel, pour les donnees SAR)
+
+INSTALLATION
+------------
+1. Telecharger le script:
+   $ wget https://example.com/linux-audit.sh
+   # ou
+   $ git clone https://github.com/user/linux-audit.git
+
+2. Rendre le script executable:
+   $ chmod +x linux-audit.sh
+
+3. (Optionnel) Copier dans un repertoire du PATH:
+   $ sudo cp linux-audit.sh /usr/local/bin/
+
+INSTALLATION DE LA MANPAGE
+--------------------------
+Pour pouvoir utiliser "man linux-audit.sh", copiez la manpage dans le
+repertoire systeme approprie:
+
+  # Pour une installation systeme (necessite les droits root):
+  $ sudo cp linux-audit.sh.1 /usr/local/share/man/man1/
+  $ sudo mandb    # Mettre a jour la base de donnees man
+
+  # Pour une installation utilisateur (sans droits root):
+  $ mkdir -p ~/.local/share/man/man1
+  $ cp linux-audit.sh.1 ~/.local/share/man/man1/
+  $ export MANPATH="$HOME/.local/share/man:$MANPATH"
+  # Ajouter la ligne export dans ~/.bashrc pour la rendre permanente
+
+  # Verification:
+  $ man linux-audit.sh
+
+UTILISATION
+-----------
+Usage: linux-audit.sh [OPTIONS] <hostname_ou_ip>
+
+Options:
+  -u, --user USER     Utilisateur SSH (defaut: root)
+  -p, --port PORT     Port SSH (defaut: 22)
+  -i, --identity KEY  Fichier de cle SSH
+  -h, --help          Affiche l'aide
+
+Exemples:
+  # Connexion basique en root
+  $ ./linux-audit.sh serveur.example.com
+
+  # Connexion avec un utilisateur specifique
+  $ ./linux-audit.sh -u admin serveur.example.com
+
+  # Connexion avec cle SSH et port personnalise
+  $ ./linux-audit.sh -u admin -i ~/.ssh/id_rsa -p 2222 192.168.1.100
+
+  # Sauvegarder le rapport dans un fichier
+  $ ./linux-audit.sh serveur.example.com > rapport-serveur.txt
+  $ ./linux-audit.sh serveur.example.com | tee rapport-serveur.txt
+
+INFORMATIONS COLLECTEES
+-----------------------
+Le script collecte les informations suivantes:
+
+  * Informations systeme
+    - Hostname, distribution, version kernel
+    - Architecture, uptime, date systeme
+
+  * CPU
+    - Modele, nombre de sockets/coeurs/threads
+    - Utilisation CPU en temps reel
+    - I/O Wait
+
+  * Memoire
+    - RAM totale, utilisee, libre
+    - Buffers et cache
+    - Calcul compatible kernels anciens (RHEL6)
+
+  * Swap
+    - Espace total, utilise, libre
+
+  * Load Average
+    - Load 1, 5, 15 minutes
+    - Ratio load/nombre de CPUs
+
+  * Disques
+    - Espace utilise par systeme de fichiers (df)
+    - Statistiques I/O depuis /proc/diskstats
+
+  * Reseau
+    - Interfaces et adresses IP
+    - Statistiques RX/TX par interface
+
+  * Processus
+    - Top 5 processus par utilisation CPU
+    - Top 5 processus par utilisation memoire
+
+  * Donnees SAR (si sysstat installe)
+    - Export complet des donnees historiques
+    - Fichier compresse YYYYMMDD-Hostname-sar.gz
+
+SEUILS D'ALERTE
+---------------
+Le script analyse les metriques et genere des alertes selon ces seuils:
+
+  Metrique          Warning    Critique
+  ----------------------------------------
+  RAM utilisee      > 75%      > 85%
+  Swap utilise      > 30%      > 50%
+  CPU utilisation   > 70%      > 85%
+  Load/CPU ratio    > 1.0      > 1.5
+  I/O Wait          > 15%      > 25%
+  Disque plein      > 80%      > 90%
+
+Les alertes sont affichees en couleur dans le terminal:
+  - Jaune : Warning
+  - Rouge : Critique
+
+FICHIER SAR
+-----------
+Si sysstat est installe sur le serveur distant, le script exporte les
+donnees SAR historiques dans un fichier compresse:
+
+  Format du nom: YYYYMMDD-Hostname-sar.gz
+  Exemple: 20250125-webserver01-sar.gz
+
+Pour lire le fichier:
+  $ zcat 20250125-webserver01-sar.gz | less
+  $ zcat 20250125-webserver01-sar.gz | grep -A 20 "CPU"
+  $ gunzip -c 20250125-webserver01-sar.gz > sar-data.txt
+
+Si sysstat n'est pas installe, un message d'avertissement est affiche et
+le script continue la collecte des autres informations.
+
+COMPATIBILITE
+-------------
+Le script a ete concu pour etre compatible avec:
+
+  Distributions:
+    - Red Hat Enterprise Linux (RHEL) 6, 7, 8, 9
+    - CentOS 6, 7, 8
+    - Oracle Linux 6, 7, 8
+    - Debian 8, 9, 10, 11, 12
+    - Ubuntu 16.04, 18.04, 20.04, 22.04, 24.04
+
+  Bash:
+    - Version 3.x et superieure (compatible RHEL6)
+    - Evite les syntaxes bash 4+ (declare -A, ${var,,}, etc.)
+
+  Chemins SAR supportes:
+    - /var/log/sa/     (RHEL/CentOS)
+    - /var/log/sysstat/ (Debian/Ubuntu)
+
+CODES DE SORTIE
+---------------
+  0  - Succes
+  1  - Erreur de connexion SSH ou argument manquant
+
+PERSONNALISATION
+----------------
+Les seuils d'alerte peuvent etre modifies en editant les variables au
+debut du script:
+
+  THRESH_RAM_WARN=75
+  THRESH_RAM_CRIT=85
+  THRESH_SWAP_WARN=30
+  THRESH_SWAP_CRIT=50
+  THRESH_CPU_WARN=70
+  THRESH_CPU_CRIT=85
+  THRESH_LOAD_WARN=1.0
+  THRESH_LOAD_CRIT=1.5
+  THRESH_IOWAIT_WARN=15
+  THRESH_IOWAIT_CRIT=25
+  THRESH_DISK_WARN=80
+  THRESH_DISK_CRIT=90
+
+SECURITE
+--------
+  - Le script utilise BatchMode=yes pour SSH (pas de prompt interactif)
+  - StrictHostKeyChecking=no est utilise (attention en environnement
+    sensible, modifier si necessaire)
+  - Aucune donnee sensible n'est stockee localement hormis le fichier SAR
+  - Recommandation: utiliser des cles SSH plutot que des mots de passe
+
+DEPANNAGE
+---------
+Probleme: "Impossible de se connecter au serveur"
+  - Verifier que le serveur est accessible: ping hostname
+  - Verifier les credentials SSH: ssh user@hostname
+  - Verifier le port SSH: ssh -p 2222 user@hostname
+  - Verifier les permissions de la cle SSH: chmod 600 ~/.ssh/id_rsa
+
+Probleme: "sysstat n'est pas installe"
+  - C'est un avertissement, pas une erreur
+  - Les autres informations sont collectees normalement
+  - Pour installer sysstat:
+    RHEL/CentOS: yum install sysstat
+    Debian/Ubuntu: apt-get install sysstat
+
+Probleme: Certaines informations manquent
+  - Certaines commandes peuvent ne pas etre disponibles selon la distribution
+  - Le script utilise des fallbacks quand possible
+  - Verifier les permissions de l'utilisateur SSH
+
+AUTEUR
+------
+Script genere par Claude (Anthropic)
+Date: Janvier 2025
+
+LICENCE
+-------
+Ce script est fourni "tel quel" sans garantie d'aucune sorte.
+Libre d'utilisation et de modification.
+
+VOIR AUSSI
+----------
+  man linux-audit.sh   - Page de manuel detaillee
+  sar(1)               - System Activity Reporter
+  vmstat(8)            - Report virtual memory statistics
+  iostat(1)            - Report I/O statistics
+  top(1)               - Display Linux processes
+
+================================================================================
