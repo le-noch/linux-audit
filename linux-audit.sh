@@ -505,14 +505,14 @@ generate_cpu_sar_chart() {
         done
 
         if [ -n \"\$today_file\" ]; then
-            LANG=C sar -u -f \"\$today_file\" 2>/dev/null | grep -E '^[0-9]{2}:[0-9]{2}:[0-9]{2}' | grep -v 'CPU' | awk '{
+            LC_ALL=C sar -u -f \"\$today_file\" 2>/dev/null | grep -E '^[0-9]{2}:[0-9]{2}:[0-9]{2}' | grep -v 'CPU' | awk '{
                 # Gerer format avec ou sans AM/PM
                 if (\$2 ~ /^(AM|PM)$/) {
                     print \$1\"|\"\$4\"|\"\$5\"|\"\$6\"|\"\$7\"|\"\$9
                 } else {
                     print \$1\"|\"\$3\"|\"\$4\"|\"\$5\"|\"\$6\"|\"\$8
                 }
-            }' | tail -144
+            }' | sed 's/,/./g' | tail -144
         fi
     ")
 
