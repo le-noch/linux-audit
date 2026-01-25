@@ -327,11 +327,13 @@ html_init() {
         .color-system { fill: #fd79a8; }
         .color-iowait { fill: #ffeaa7; }
         .color-steal { fill: #ff7675; }
+        .color-idle { fill: #55a3dc; }
         .bg-user { background: #e84393; }
         .bg-nice { background: #a29bfe; }
         .bg-system { background: #fd79a8; }
         .bg-iowait { background: #ffeaa7; }
         .bg-steal { background: #ff7675; }
+        .bg-idle { background: #55a3dc; }
         @media (max-width: 768px) {
             .info-grid { grid-template-columns: 1fr; }
             .header h1 { font-size: 1.5em; }
@@ -496,7 +498,7 @@ generate_cpu_sar_chart() {
     fi
 
     # Collecter les donnees SAR CPU des dernieres 24h
-    # Format: heure|%user|%nice|%system|%iowait|%steal
+    # Format: heure|%user|%nice|%system|%iowait|%steal|%idle
     local cpu_data=$(ssh_exec "
         # Fichier SAR du jour
         today_file=\"\"
@@ -507,8 +509,8 @@ generate_cpu_sar_chart() {
         if [ -n \"\$today_file\" ]; then
             # LC_ALL=C garantit format US (decimales avec point, pas de AM/PM en 24h)
             LC_ALL=C sar -u -f \"\$today_file\" 2>/dev/null | grep -E '^[0-9]{2}:[0-9]{2}:[0-9]{2}' | grep -v 'CPU' | awk '{
-                # Format 24h sans AM/PM avec LC_ALL=C
-                print \$1\"|\"\$3\"|\"\$4\"|\"\$5\"|\"\$6\"|\"\$8
+                # Format 24h sans AM/PM avec LC_ALL=C: time|user|nice|system|iowait|steal|idle
+                print \$1\"|\"\$3\"|\"\$4\"|\"\$5\"|\"\$6\"|\"\$8\"|\"\$9
             }' | tail -144
         fi
     ")
@@ -545,14 +547,15 @@ generate_cpu_sar_chart() {
     local points_system=""
     local points_iowait=""
     local points_steal=""
+    local points_idle=""
 
     # Construire les points pour chaque serie
-    while IFS='|' read -r time user nice system iowait steal; do
+    while IFS='|' read -r time user nice system iowait steal idle; do
         [ -z "$time" ] && continue
 
         local x=$(echo "$point_index $x_step $margin_left" | awk '{printf "%.1f", $1 * $2 + $3}')
 
-        # Valeurs cumulees (de bas en haut: user, nice, system, iowait, steal)
+        # Valeurs cumulees (de bas en haut: user, nice, system, iowait, steal, idle)
         local y_user=$(echo "$user $chart_height $margin_top" | awk '{printf "%.1f", $3 + $2 - ($1 * $2 / 100)}')
         local cum_nice=$(echo "$user $nice" | awk '{print $1 + $2}')
         local y_nice=$(echo "$cum_nice $chart_height $margin_top" | awk '{printf "%.1f", $3 + $2 - ($1 * $2 / 100)}')
@@ -562,12 +565,15 @@ generate_cpu_sar_chart() {
         local y_iowait=$(echo "$cum_iowait $chart_height $margin_top" | awk '{printf "%.1f", $3 + $2 - ($1 * $2 / 100)}')
         local cum_steal=$(echo "$cum_iowait $steal" | awk '{print $1 + $2}')
         local y_steal=$(echo "$cum_steal $chart_height $margin_top" | awk '{printf "%.1f", $3 + $2 - ($1 * $2 / 100)}')
+        local cum_idle=$(echo "$cum_steal $idle" | awk '{print $1 + $2}')
+        local y_idle=$(echo "$cum_idle $chart_height $margin_top" | awk '{printf "%.1f", $3 + $2 - ($1 * $2 / 100)}')
 
         points_user="${points_user}${x},${y_user} "
         points_nice="${points_nice}${x},${y_nice} "
         points_system="${points_system}${x},${y_system} "
         points_iowait="${points_iowait}${x},${y_iowait} "
         points_steal="${points_steal}${x},${y_steal} "
+        points_idle="${points_idle}${x},${y_idle} "
 
         point_index=$((point_index + 1))
     done <<< "$cpu_data"
@@ -578,7 +584,9 @@ generate_cpu_sar_chart() {
     local x_end=$((margin_left + chart_width))
 
     # Construire les chemins SVG (du haut vers le bas pour l'empilement)
-    # steal (le plus haut)
+    # idle (le plus haut - 100%)
+    local path_idle="M${x_start},${baseline_y} L${points_idle}L${x_end},${baseline_y} Z"
+    # steal
     local path_steal="M${x_start},${baseline_y} L${points_steal}L${x_end},${baseline_y} Z"
     # iowait
     local path_iowait="M${x_start},${baseline_y} L${points_iowait}L${x_end},${baseline_y} Z"
@@ -606,6 +614,7 @@ generate_cpu_sar_chart() {
                         <line x1=\"${margin_left}\" y1=\"${baseline_y}\" x2=\"${x_end}\" y2=\"${baseline_y}\" stroke=\"#444\" stroke-width=\"0.5\"/>
 
                         <!-- Aires empilees (ordre inverse: du fond vers le premier plan) -->
+                        <path d=\"${path_idle}\" class=\"color-idle\" opacity=\"0.8\"/>
                         <path d=\"${path_steal}\" class=\"color-steal\" opacity=\"0.8\"/>
                         <path d=\"${path_iowait}\" class=\"color-iowait\" opacity=\"0.8\"/>
                         <path d=\"${path_system}\" class=\"color-system\" opacity=\"0.8\"/>
@@ -628,6 +637,7 @@ generate_cpu_sar_chart() {
                     <div class=\"cpu-legend-item\"><div class=\"cpu-legend-color bg-system\"></div><span>%system</span></div>
                     <div class=\"cpu-legend-item\"><div class=\"cpu-legend-color bg-iowait\"></div><span>%iowait</span></div>
                     <div class=\"cpu-legend-item\"><div class=\"cpu-legend-color bg-steal\"></div><span>%steal</span></div>
+                    <div class=\"cpu-legend-item\"><div class=\"cpu-legend-color bg-idle\"></div><span>%idle</span></div>
                 </div>
             </div>
 "
