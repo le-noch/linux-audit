@@ -315,6 +315,23 @@ html_init() {
         .table-process td { font-family: monospace; font-size: 0.9em; }
         .table-process td:nth-child(1), .table-process td:nth-child(2) { font-family: inherit; }
         .table-process td:nth-child(5) { font-family: inherit; }
+        .cpu-chart-container { margin-top: 20px; }
+        .cpu-chart-title { color: #a0a0a0; font-size: 1em; margin-bottom: 10px; }
+        .cpu-chart { background: rgba(0,0,0,0.3); border-radius: 8px; padding: 15px; }
+        .cpu-chart svg { width: 100%; height: 200px; }
+        .cpu-legend { display: flex; gap: 15px; margin-top: 10px; flex-wrap: wrap; justify-content: center; }
+        .cpu-legend-item { display: flex; align-items: center; gap: 5px; font-size: 0.8em; }
+        .cpu-legend-color { width: 12px; height: 12px; border-radius: 2px; }
+        .color-user { fill: #e84393; }
+        .color-nice { fill: #a29bfe; }
+        .color-system { fill: #fd79a8; }
+        .color-iowait { fill: #ffeaa7; }
+        .color-steal { fill: #ff7675; }
+        .bg-user { background: #e84393; }
+        .bg-nice { background: #a29bfe; }
+        .bg-system { background: #fd79a8; }
+        .bg-iowait { background: #ffeaa7; }
+        .bg-steal { background: #ff7675; }
         @media (max-width: 768px) {
             .info-grid { grid-template-columns: 1fr; }
             .header h1 { font-size: 1.5em; }
@@ -470,6 +487,156 @@ write_html_report() {
     fi
 }
 
+# Generer le graphique SVG CPU depuis les donnees SAR (dernières 24h)
+generate_cpu_sar_chart() {
+    local sar_path="$1"
+
+    if [ -z "$sar_path" ]; then
+        return 1
+    fi
+
+    # Collecter les donnees SAR CPU des dernieres 24h
+    # Format: heure|%user|%nice|%system|%iowait|%steal
+    local cpu_data=$(ssh_exec "
+        # Fichier SAR du jour
+        today_file=\"\"
+        for f in ${sar_path}/sa[0-9][0-9] ${sar_path}/sa[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]; do
+            [ -f \"\$f\" ] && today_file=\"\$f\"
+        done
+
+        if [ -n \"\$today_file\" ]; then
+            LANG=C sar -u -f \"\$today_file\" 2>/dev/null | grep -E '^[0-9]{2}:[0-9]{2}:[0-9]{2}' | grep -v 'CPU' | awk '{
+                # Gerer format avec ou sans AM/PM
+                if (\$2 ~ /^(AM|PM)$/) {
+                    print \$1\"|\"\$4\"|\"\$5\"|\"\$6\"|\"\$7\"|\"\$9
+                } else {
+                    print \$1\"|\"\$3\"|\"\$4\"|\"\$5\"|\"\$6\"|\"\$8
+                }
+            }' | tail -144
+        fi
+    ")
+
+    if [ -z "$cpu_data" ]; then
+        return 1
+    fi
+
+    # Compter le nombre de points
+    local num_points=$(echo "$cpu_data" | wc -l)
+    if [ "$num_points" -lt 2 ]; then
+        return 1
+    fi
+
+    # Dimensions du graphique
+    local width=800
+    local height=180
+    local margin_left=40
+    local margin_right=10
+    local margin_top=10
+    local margin_bottom=25
+    local chart_width=$((width - margin_left - margin_right))
+    local chart_height=$((height - margin_top - margin_bottom))
+
+    # Generer les paths SVG pour les aires empilees
+    # On calcule les points pour chaque couche
+    local svg_paths=""
+    local point_index=0
+    local x_step=$(echo "$chart_width $num_points" | awk '{printf "%.2f", $1 / ($2 - 1)}')
+
+    # Arrays pour stocker les valeurs cumulees
+    local points_user=""
+    local points_nice=""
+    local points_system=""
+    local points_iowait=""
+    local points_steal=""
+
+    # Construire les points pour chaque serie
+    while IFS='|' read -r time user nice system iowait steal; do
+        [ -z "$time" ] && continue
+
+        local x=$(echo "$point_index $x_step $margin_left" | awk '{printf "%.1f", $1 * $2 + $3}')
+
+        # Valeurs cumulees (de bas en haut: user, nice, system, iowait, steal)
+        local y_user=$(echo "$user $chart_height $margin_top" | awk '{printf "%.1f", $3 + $2 - ($1 * $2 / 100)}')
+        local cum_nice=$(echo "$user $nice" | awk '{print $1 + $2}')
+        local y_nice=$(echo "$cum_nice $chart_height $margin_top" | awk '{printf "%.1f", $3 + $2 - ($1 * $2 / 100)}')
+        local cum_system=$(echo "$cum_nice $system" | awk '{print $1 + $2}')
+        local y_system=$(echo "$cum_system $chart_height $margin_top" | awk '{printf "%.1f", $3 + $2 - ($1 * $2 / 100)}')
+        local cum_iowait=$(echo "$cum_system $iowait" | awk '{print $1 + $2}')
+        local y_iowait=$(echo "$cum_iowait $chart_height $margin_top" | awk '{printf "%.1f", $3 + $2 - ($1 * $2 / 100)}')
+        local cum_steal=$(echo "$cum_iowait $steal" | awk '{print $1 + $2}')
+        local y_steal=$(echo "$cum_steal $chart_height $margin_top" | awk '{printf "%.1f", $3 + $2 - ($1 * $2 / 100)}')
+
+        points_user="${points_user}${x},${y_user} "
+        points_nice="${points_nice}${x},${y_nice} "
+        points_system="${points_system}${x},${y_system} "
+        points_iowait="${points_iowait}${x},${y_iowait} "
+        points_steal="${points_steal}${x},${y_steal} "
+
+        point_index=$((point_index + 1))
+    done <<< "$cpu_data"
+
+    # Ligne de base (y = hauteur max)
+    local baseline_y=$((margin_top + chart_height))
+    local x_start=$margin_left
+    local x_end=$((margin_left + chart_width))
+
+    # Construire les chemins SVG (du haut vers le bas pour l'empilement)
+    # steal (le plus haut)
+    local path_steal="M${x_start},${baseline_y} L${points_steal}L${x_end},${baseline_y} Z"
+    # iowait
+    local path_iowait="M${x_start},${baseline_y} L${points_iowait}L${x_end},${baseline_y} Z"
+    # system
+    local path_system="M${x_start},${baseline_y} L${points_system}L${x_end},${baseline_y} Z"
+    # nice
+    local path_nice="M${x_start},${baseline_y} L${points_nice}L${x_end},${baseline_y} Z"
+    # user (le plus bas)
+    local path_user="M${x_start},${baseline_y} L${points_user}L${x_end},${baseline_y} Z"
+
+    # Extraire premiere et derniere heure pour les labels
+    local first_time=$(echo "$cpu_data" | head -1 | cut -d'|' -f1)
+    local last_time=$(echo "$cpu_data" | tail -1 | cut -d'|' -f1)
+
+    # Generer le SVG complet
+    html_append "            <div class=\"cpu-chart-container\">
+                <h3 class=\"cpu-chart-title\">Historique CPU (dernieres 24h - SAR)</h3>
+                <div class=\"cpu-chart\">
+                    <svg viewBox=\"0 0 ${width} ${height}\" preserveAspectRatio=\"xMidYMid meet\">
+                        <!-- Grille horizontale -->
+                        <line x1=\"${margin_left}\" y1=\"${margin_top}\" x2=\"${x_end}\" y2=\"${margin_top}\" stroke=\"#444\" stroke-width=\"0.5\"/>
+                        <line x1=\"${margin_left}\" y1=\"$((margin_top + chart_height/4))\" x2=\"${x_end}\" y2=\"$((margin_top + chart_height/4))\" stroke=\"#333\" stroke-width=\"0.5\"/>
+                        <line x1=\"${margin_left}\" y1=\"$((margin_top + chart_height/2))\" x2=\"${x_end}\" y2=\"$((margin_top + chart_height/2))\" stroke=\"#333\" stroke-width=\"0.5\"/>
+                        <line x1=\"${margin_left}\" y1=\"$((margin_top + 3*chart_height/4))\" x2=\"${x_end}\" y2=\"$((margin_top + 3*chart_height/4))\" stroke=\"#333\" stroke-width=\"0.5\"/>
+                        <line x1=\"${margin_left}\" y1=\"${baseline_y}\" x2=\"${x_end}\" y2=\"${baseline_y}\" stroke=\"#444\" stroke-width=\"0.5\"/>
+
+                        <!-- Aires empilees (ordre inverse: du fond vers le premier plan) -->
+                        <path d=\"${path_steal}\" class=\"color-steal\" opacity=\"0.8\"/>
+                        <path d=\"${path_iowait}\" class=\"color-iowait\" opacity=\"0.8\"/>
+                        <path d=\"${path_system}\" class=\"color-system\" opacity=\"0.8\"/>
+                        <path d=\"${path_nice}\" class=\"color-nice\" opacity=\"0.8\"/>
+                        <path d=\"${path_user}\" class=\"color-user\" opacity=\"0.8\"/>
+
+                        <!-- Axes labels -->
+                        <text x=\"$((margin_left - 5))\" y=\"$((margin_top + 4))\" fill=\"#888\" font-size=\"10\" text-anchor=\"end\">100%</text>
+                        <text x=\"$((margin_left - 5))\" y=\"$((margin_top + chart_height/2 + 4))\" fill=\"#888\" font-size=\"10\" text-anchor=\"end\">50%</text>
+                        <text x=\"$((margin_left - 5))\" y=\"$((baseline_y))\" fill=\"#888\" font-size=\"10\" text-anchor=\"end\">0%</text>
+
+                        <!-- Time labels -->
+                        <text x=\"${margin_left}\" y=\"$((baseline_y + 15))\" fill=\"#888\" font-size=\"10\" text-anchor=\"start\">${first_time}</text>
+                        <text x=\"${x_end}\" y=\"$((baseline_y + 15))\" fill=\"#888\" font-size=\"10\" text-anchor=\"end\">${last_time}</text>
+                    </svg>
+                </div>
+                <div class=\"cpu-legend\">
+                    <div class=\"cpu-legend-item\"><div class=\"cpu-legend-color bg-user\"></div><span>%user</span></div>
+                    <div class=\"cpu-legend-item\"><div class=\"cpu-legend-color bg-nice\"></div><span>%nice</span></div>
+                    <div class=\"cpu-legend-item\"><div class=\"cpu-legend-color bg-system\"></div><span>%system</span></div>
+                    <div class=\"cpu-legend-item\"><div class=\"cpu-legend-color bg-iowait\"></div><span>%iowait</span></div>
+                    <div class=\"cpu-legend-item\"><div class=\"cpu-legend-color bg-steal\"></div><span>%steal</span></div>
+                </div>
+            </div>
+"
+    return 0
+}
+
 #-------------------------------------------------------------------------------
 # SECTION 3: FONCTIONS DE COLLECTE
 #-------------------------------------------------------------------------------
@@ -508,7 +675,8 @@ detect_distro() {
 collect_system_info() {
     print_header "INFORMATIONS SYSTEME"
 
-    REMOTE_HOSTNAME=$(ssh_exec "hostname" 2>/dev/null)
+    # REMOTE_HOSTNAME peut deja etre defini dans main()
+    [ -z "$REMOTE_HOSTNAME" ] && REMOTE_HOSTNAME=$(ssh_exec "hostname" 2>/dev/null)
     local kernel=$(ssh_exec "uname -r" 2>/dev/null)
     local arch=$(ssh_exec "uname -m" 2>/dev/null)
     local uptime_info=$(ssh_exec "uptime -p 2>/dev/null || uptime" 2>/dev/null)
@@ -673,6 +841,13 @@ collect_cpu_info() {
             html_progress_row "I/O Wait" "${iowait}%" "$iowait" "$iowait_status"
         fi
         html_info_end
+
+        # Ajouter le graphique historique CPU si SAR disponible
+        local sar_path_cpu=$(detect_sar_path 2>/dev/null)
+        if [ -n "$sar_path_cpu" ]; then
+            generate_cpu_sar_chart "$sar_path_cpu"
+        fi
+
         html_section_end
     fi
 }
@@ -1682,12 +1857,15 @@ main() {
 
     print_success "Connexion SSH etablie"
 
-    # Collecte des informations
-    collect_system_info
+    # Recuperer le hostname pour le nom du fichier HTML
+    REMOTE_HOSTNAME=$(ssh_exec "hostname" 2>/dev/null)
 
-    # Initialiser le rapport HTML automatiquement (apres collect_system_info pour avoir REMOTE_HOSTNAME)
+    # Initialiser le rapport HTML automatiquement
     HTML_OUTPUT="${TIMESTAMP}-${REMOTE_HOSTNAME}-audit.html"
     html_init "$REMOTE_HOSTNAME" "$(date '+%Y-%m-%d %H:%M:%S')"
+
+    # Collecte des informations
+    collect_system_info
     collect_cpu_info
     collect_memory_info
     collect_swap_info
