@@ -1335,7 +1335,8 @@ detect_sar_path() {
     local sar_paths="/var/log/sa /var/log/sysstat"
 
     for path in $sar_paths; do
-        local check=$(ssh_exec "[ -d '$path' ] && ls $path/sa?? 2>/dev/null | head -1")
+        # Verifier le format ancien (sa01, sa02...) et nouveau (sa20260125)
+        local check=$(ssh_exec "[ -d '$path' ] && (ls $path/sa[0-9][0-9] $path/sa[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9] 2>/dev/null | head -1)")
         if [ -n "$check" ]; then
             echo "$path"
             return 0
@@ -1361,8 +1362,9 @@ analyze_sar_io_history() {
 
     # Analyser les donnees sar -d pour tous les fichiers disponibles
     # Chercher les pics: %util > 80% ou await > 30ms
+    # Support format ancien (sa01) et nouveau (sa20260125)
     io_anomalies=$(ssh_exec "
-        for sarfile in \$(ls -rt ${sar_path}/sa?? 2>/dev/null); do
+        for sarfile in \$(ls -rt ${sar_path}/sa[0-9][0-9] ${sar_path}/sa[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9] 2>/dev/null); do
             # Extraire la date du fichier
             filedate=\$(LANG=C sar -d -f \$sarfile 2>/dev/null | head -1 | awk '{print \$4}')
 
@@ -1439,8 +1441,8 @@ collect_sar_data() {
             sar_available=1
             print_info "Chemin SAR" "$sar_path"
 
-            # Lister les fichiers disponibles
-            sar_files=$(ssh_exec "ls -rt ${sar_path}/sa?? 2>/dev/null | wc -l")
+            # Lister les fichiers disponibles (format ancien sa01 et nouveau sa20260125)
+            sar_files=$(ssh_exec "ls -rt ${sar_path}/sa[0-9][0-9] ${sar_path}/sa[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9] 2>/dev/null | wc -l")
             print_info "Fichiers SAR" "${sar_files} fichier(s) trouve(s)"
 
             # Nom du fichier de sortie
@@ -1449,7 +1451,8 @@ collect_sar_data() {
             echo "  Extraction des donnees SAR en cours..."
 
             # Executer la commande sar sur tous les fichiers et compresser
-            ssh_exec "for i in \$(ls -rt ${sar_path}/sa?? 2>/dev/null); do LANG=C sar -A -f \$i 2>/dev/null; done | gzip -c" > "$output_file"
+            # Support format ancien (sa01) et nouveau (sa20260125)
+            ssh_exec "for i in \$(ls -rt ${sar_path}/sa[0-9][0-9] ${sar_path}/sa[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9] 2>/dev/null); do LANG=C sar -A -f \$i 2>/dev/null; done | gzip -c" > "$output_file"
 
             if [ -s "$output_file" ]; then
                 file_size=$(ls -lh "$output_file" | awk '{print $5}')
