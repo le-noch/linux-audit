@@ -20,25 +20,34 @@ No build or test commands - this is a single bash script.
 
 ## Architecture
 
-The script is organized into numbered sections:
+The script (~1900 lines) is organized into numbered sections:
 
 | Section | Lines | Purpose |
 |---------|-------|---------|
 | 1 | ~1-60 | Global variables, thresholds, colors |
 | 2 | ~62-180 | Utility functions (print_*, ssh_exec, alerts) |
 | 2B | ~182-647 | HTML generation functions (html_*) |
-| 3 | ~648-1536 | Data collection functions (collect_*) |
-| 4 | ~1537-1732 | SAR/sysstat data collection and analysis |
-| 5 | ~1733-1802 | Alert summary generation |
-| 6 | ~1803-end | Main function, argument parsing |
+| 3 | ~648-1538 | Data collection functions (collect_*) |
+| 4 | ~1539-1741 | SAR/sysstat data collection and analysis |
+| 5 | ~1742-1811 | Alert summary generation |
+| 6 | ~1812-end | Main function, argument parsing |
 
 ### Key Functions
 
 - `ssh_exec()` - Executes commands on remote server via SSH
-- `collect_*()` - Each function collects specific metrics (CPU, memory, disk, network, etc.)
+- `collect_*()` - Data collection functions:
+  - `collect_system_info()` - OS, kernel, hostname, uptime
+  - `collect_cpu_info()` - CPU model, cores, current usage
+  - `collect_memory_info()` - RAM usage, buffers, cache
+  - `collect_swap_info()` - Swap usage and top swap consumers
+  - `collect_load_info()` - Load averages vs CPU count
+  - `collect_disk_info()` - Filesystem usage with type column
+  - `collect_network_info()` - Interfaces, IPs, routing
+  - `collect_process_info()` - Top processes by CPU/memory
+  - `collect_sar_data()` - Historical SAR metrics
 - `html_*()` - HTML generation helpers that append to `HTML_CONTENT` global variable
-- `generate_cpu_sar_chart()` - Generates SVG stacked area chart from SAR CPU data
-- `analyze_sar_io_history()` - Detects I/O anomalies from historical SAR data
+- `generate_cpu_sar_chart()` - Generates SVG stacked area chart from SAR CPU data (shows %user, %system, %iowait, %idle)
+- `analyze_sar_io_history()` - Detects I/O anomalies from historical SAR data using dynamic column detection
 
 ### Data Flow
 
@@ -57,8 +66,9 @@ The script is organized into numbered sections:
 
 ### SAR Data Parsing
 - Always use `LC_ALL=C` for SAR commands to ensure consistent US format (dot decimal separator, MM/DD/YY dates)
-- Column detection must be dynamic - sysstat versions have different column layouts
+- Column detection must be dynamic - sysstat versions have different column layouts for metrics like `await` and `%util`
 - Support both old (`/var/log/sa/sa01`) and new (`/var/log/sysstat/sa20260125`) SAR file naming
+- I/O anomaly detection uses multiple criteria: high await (>20ms) OR high %util (>80%), not just one metric
 
 ### Subshell Variable Scope
 - Avoid `echo | while read` pattern - variables set in subshell are lost
@@ -76,5 +86,15 @@ THRESH_DISK_WARN=80   THRESH_DISK_CRIT=90
 ## Output Files
 
 The script generates:
-- `YYYYMMDD-Hostname-audit.html` - Standalone HTML report with embedded CSS
+- `YYYYMMDD-Hostname-audit.html` - Standalone HTML report with embedded CSS, includes:
+  - Interactive sections with collapsible details
+  - SVG CPU history chart (stacked area: %user, %system, %iowait, %idle)
+  - Color-coded alerts matching terminal output
 - `YYYYMMDD-Hostname-sar.gz` - Compressed SAR data export (if sysstat available)
+
+## Code Style
+
+- French comments throughout (legacy codebase)
+- Functions prefixed by purpose: `print_*`, `html_*`, `collect_*`
+- Global variables in UPPER_CASE
+- Local variables declared with `local` keyword
