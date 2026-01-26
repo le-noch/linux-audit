@@ -1604,13 +1604,20 @@ analyze_sar_io_history() {
                 await_int=\$(echo \"\$await\" | cut -d. -f1)
 
                 if [ -n \"\$util_int\" ] && [ \"\$util_int\" -ge 80 ] 2>/dev/null; then
-                    echo \"UTIL|\$filedate|\$time|\$dev|%util=\${util}%|await=\${await}ms\"
+                    echo \"UTIL|\$filedate|\$time|\$dev|%util=\${util}%|await=\${await}ms|\${util}\"
                 elif [ -n \"\$await_int\" ] && [ \"\$await_int\" -ge 30 ] 2>/dev/null; then
-                    echo \"AWAIT|\$filedate|\$time|\$dev|%util=\${util}%|await=\${await}ms\"
+                    echo \"AWAIT|\$filedate|\$time|\$dev|%util=\${util}%|await=\${await}ms|\${await}\"
                 fi
             done
-        done | sort -t'|' -k5 -rn | head -20
+        done
     ")
+
+    # Trier separement les anomalies UTIL et AWAIT pour ne pas perdre les pics await
+    local util_anomalies=$(echo "$io_anomalies" | grep '^UTIL|' | sort -t'|' -k7 -rn | head -10)
+    local await_anomalies=$(echo "$io_anomalies" | grep '^AWAIT|' | sort -t'|' -k7 -rn | head -10)
+
+    # Combiner et retirer la colonne de tri (champ 7)
+    io_anomalies=$(printf '%s\n%s' "$util_anomalies" "$await_anomalies" | grep -v '^$' | cut -d'|' -f1-6 | sort -t'|' -k2,3 -r)
 
     if [ -n "$io_anomalies" ]; then
         local count=$(echo "$io_anomalies" | wc -l)
