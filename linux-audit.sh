@@ -1569,6 +1569,7 @@ analyze_sar_io_history() {
     # Analyser les donnees sar -d pour tous les fichiers disponibles
     # Chercher les pics: %util > 80% ou await > 30ms
     # Support format ancien (sa01) et nouveau (sa20260125)
+    # Detection dynamique des colonnes pour compatibilite toutes versions sysstat
     io_anomalies=$(ssh_exec "
         for sarfile in \$(ls -rt ${sar_path}/sa[0-9][0-9] ${sar_path}/sa[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9] 2>/dev/null); do
             # Extraire la date du fichier (format US avec LC_ALL=C: MM/DD/YY)
@@ -1580,20 +1581,23 @@ analyze_sar_io_history() {
                 print \$2\"/\"\$1\"/\"year
             }')
 
-            # Analyser chaque ligne de donnees disk
+            # Detecter dynamiquement les indices de colonnes depuis l'en-tete SAR
+            header=\$(LC_ALL=C sar -d -f \$sarfile 2>/dev/null | grep -E 'DEV|await|%util' | head -1)
+            dev_col=\$(echo \"\$header\" | awk '{for(i=1;i<=NF;i++) if(\$i==\"DEV\") print i}')
+            await_col=\$(echo \"\$header\" | awk '{for(i=1;i<=NF;i++) if(\$i==\"await\") print i}')
+            util_col=\$(echo \"\$header\" | awk '{for(i=1;i<=NF;i++) if(\$i==\"%util\") print i}')
+
+            # Fallback si colonnes non detectees (anciennes versions)
+            [ -z \"\$dev_col\" ] && dev_col=2
+            [ -z \"\$await_col\" ] && await_col=8
+            [ -z \"\$util_col\" ] && util_col=10
+
+            # Analyser chaque ligne de donnees disk avec les colonnes detectees
             LC_ALL=C sar -d -f \$sarfile 2>/dev/null | grep -E '^[0-9]{2}:[0-9]{2}:[0-9]{2}' | grep -v 'DEV' | while read line; do
                 time=\$(echo \"\$line\" | awk '{print \$1}')
-                ampm=\$(echo \"\$line\" | awk '{print \$2}')
-                dev=\$(echo \"\$line\" | awk '{print \$3}')
-                # Si pas de AM/PM, le device est en position 2
-                if echo \"\$ampm\" | grep -qE '^(sd|vd|nvme|xvd|dm-)'; then
-                    dev=\"\$ampm\"
-                    await=\$(echo \"\$line\" | awk '{print \$8}')
-                    util=\$(echo \"\$line\" | awk '{print \$10}')
-                else
-                    await=\$(echo \"\$line\" | awk '{print \$9}')
-                    util=\$(echo \"\$line\" | awk '{print \$11}')
-                fi
+                dev=\$(echo \"\$line\" | awk -v col=\$dev_col '{print \$col}')
+                await=\$(echo \"\$line\" | awk -v col=\$await_col '{print \$col}')
+                util=\$(echo \"\$line\" | awk -v col=\$util_col '{print \$col}')
 
                 # Verifier les seuils (util > 80% ou await > 30ms)
                 util_int=\$(echo \"\$util\" | cut -d. -f1)
