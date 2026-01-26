@@ -89,7 +89,9 @@ Nombre de CPUs
 Ratio load/CPU (indicateur de charge)
 .SS Disques
 .IP \(bu 2
-Espace disque par systeme de fichiers (df -h)
+Espace disque par systeme de fichiers (df)
+.IP \(bu 2
+Type de filesystem (ext4, xfs, btrfs, etc.)
 .IP \(bu 2
 Statistiques I/O depuis /proc/diskstats (lectures, ecritures, temps I/O)
 .SS Reseau
@@ -131,6 +133,13 @@ Les alertes sont affichees en couleur:
 .IP \(bu 2
 \fBRouge\fR : Critique (seuil critique depasse)
 .SH FICHIERS
+.TP
+.I YYYYMMDD-Hostname-audit.html
+Rapport HTML standalone genere automatiquement a chaque execution.
+Inclut un design moderne avec theme sombre, graphique CPU historique
+(aires empilees SVG si SAR disponible), visualisation memoire detaillee,
+tableaux pour disques/processus/reseau, et detection des pics I/O.
+Le fichier est cree dans le repertoire courant.
 .TP
 .I YYYYMMDD-Hostname-sar.gz
 Fichier compresse contenant les donnees SAR exportees du serveur.

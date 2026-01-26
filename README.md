@@ -116,6 +116,7 @@ Le script collecte les informations suivantes:
 
 ### Disques
 - Espace utilisé par système de fichiers (df)
+- Type de filesystem (ext4, xfs, btrfs, etc.)
 - Statistiques I/O depuis /proc/diskstats
 
 ### Réseau
@@ -157,12 +158,18 @@ Un rapport HTML est **automatiquement généré** à chaque exécution du script
 Le rapport HTML inclut:
 - Design moderne avec thème sombre
 - Barres de progression colorées pour les métriques
+- **Graphique CPU historique** (si SAR disponible):
+  - Aires empilées SVG montrant user, system, iowait, steal, idle
+  - Basé sur les données SAR des dernières 24h
 - **Visualisation mémoire détaillée** avec couleurs distinctes pour:
   - RAM réellement utilisée (rose)
   - Cache (bleu)
   - Buffers (cyan)
   - RAM libre
-- Tableaux pour les disques, processus et réseau
+- Tableaux pour les disques (avec type de filesystem), processus et réseau
+- **Détection des pics I/O** depuis l'historique SAR:
+  - Affiche les périodes de forte utilisation disque (%util élevé)
+  - Affiche les périodes de latence élevée (await élevé)
 - Alertes avec badges colorés (critique/warning/ok)
 - Responsive design pour mobile et desktop
 
