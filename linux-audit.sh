@@ -1077,27 +1077,28 @@ collect_load_info() {
 collect_disk_info() {
     print_header "DISQUES ET SYSTEMES DE FICHIERS"
 
-    # df pour l'espace disque
-    local df_output=$(ssh_exec "LANG=C df -hP 2>/dev/null | grep -vE '^Filesystem|tmpfs|cdrom|devtmpfs'")
+    # df pour l'espace disque (avec type de filesystem)
+    local df_output=$(ssh_exec "LANG=C df -ThP 2>/dev/null | grep -vE '^Filesystem|tmpfs|cdrom|devtmpfs'")
 
     echo ""
-    printf "  %-30s %8s %8s %8s %6s\n" "Filesystem" "Size" "Used" "Avail" "Use%"
-    printf "  %-30s %8s %8s %8s %6s\n" "------------------------------" "--------" "--------" "--------" "------"
+    printf "  %-25s %-8s %8s %8s %8s %6s\n" "Filesystem" "Type" "Size" "Used" "Avail" "Use%"
+    printf "  %-25s %-8s %8s %8s %8s %6s\n" "-------------------------" "--------" "--------" "--------" "--------" "------"
 
     # Store disk data for HTML
     local disk_html_rows=""
 
     echo "$df_output" | while read line; do
         local fs=$(echo "$line" | awk '{print $1}')
-        local size=$(echo "$line" | awk '{print $2}')
-        local used=$(echo "$line" | awk '{print $3}')
-        local avail=$(echo "$line" | awk '{print $4}')
-        local use_percent=$(echo "$line" | awk '{print $5}' | tr -d '%')
-        local mount=$(echo "$line" | awk '{print $6}')
+        local fstype=$(echo "$line" | awk '{print $2}')
+        local size=$(echo "$line" | awk '{print $3}')
+        local used=$(echo "$line" | awk '{print $4}')
+        local avail=$(echo "$line" | awk '{print $5}')
+        local use_percent=$(echo "$line" | awk '{print $6}' | tr -d '%')
+        local mount=$(echo "$line" | awk '{print $7}')
 
         # Tronquer le nom du filesystem si trop long
-        if [ ${#fs} -gt 30 ]; then
-            fs="...${fs: -27}"
+        if [ ${#fs} -gt 25 ]; then
+            fs="...${fs: -22}"
         fi
 
         local alert_flag=""
@@ -1110,9 +1111,9 @@ collect_disk_info() {
         fi
 
         if [ -n "$alert_flag" ]; then
-            printf "  %-30s %8s %8s %8s %5s%% %b\n" "$fs" "$size" "$used" "$avail" "$use_percent" "$alert_flag"
+            printf "  %-25s %-8s %8s %8s %8s %5s%% %b\n" "$fs" "$fstype" "$size" "$used" "$avail" "$use_percent" "$alert_flag"
         else
-            printf "  %-30s %8s %8s %8s %5s%%\n" "$fs" "$size" "$used" "$avail" "$use_percent"
+            printf "  %-25s %-8s %8s %8s %8s %5s%%\n" "$fs" "$fstype" "$size" "$used" "$avail" "$use_percent"
         fi
     done
 
@@ -1239,16 +1240,17 @@ collect_disk_info() {
     # HTML output
     if [ -n "$HTML_OUTPUT" ]; then
         html_section_start "Disques et Systemes de Fichiers"
-        html_table_start "Filesystem,Taille,Utilise,Disponible,Usage,Statut"
+        html_table_start "Filesystem,Type,Taille,Utilise,Disponible,Usage,Statut"
 
         while IFS= read -r line; do
             [ -z "$line" ] && continue
             local fs=$(echo "$line" | awk '{print $1}')
-            local size=$(echo "$line" | awk '{print $2}')
-            local used=$(echo "$line" | awk '{print $3}')
-            local avail=$(echo "$line" | awk '{print $4}')
-            local use_percent=$(echo "$line" | awk '{print $5}' | tr -d '%')
-            local mount=$(echo "$line" | awk '{print $6}')
+            local fstype=$(echo "$line" | awk '{print $2}')
+            local size=$(echo "$line" | awk '{print $3}')
+            local used=$(echo "$line" | awk '{print $4}')
+            local avail=$(echo "$line" | awk '{print $5}')
+            local use_percent=$(echo "$line" | awk '{print $6}' | tr -d '%')
+            local mount=$(echo "$line" | awk '{print $7}')
 
             local status_badge=""
             if [ -n "$use_percent" ] && [ "$use_percent" -ge "$THRESH_DISK_CRIT" ] 2>/dev/null; then
@@ -1259,7 +1261,7 @@ collect_disk_info() {
                 status_badge="<span class=\"badge badge-ok\">OK</span>"
             fi
 
-            html_table_row "${mount}|${size}|${used}|${avail}|${use_percent}%|${status_badge}"
+            html_table_row "${mount}|${fstype}|${size}|${used}|${avail}|${use_percent}%|${status_badge}"
         done <<< "$df_output"
 
         html_table_end
