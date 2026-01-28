@@ -39,6 +39,7 @@ REMOTE_HOST=""
 REMOTE_USER="root"
 REMOTE_PORT="22"
 SSH_KEY=""
+SSH_PASSWORD=""
 SSH_OPTS="-o ConnectTimeout=10 -o StrictHostKeyChecking=no -o BatchMode=yes"
 TIMESTAMP=$(date +%Y%m%d)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -66,15 +67,19 @@ usage() {
     echo "Usage: $0 [OPTIONS] <hostname_ou_ip>"
     echo ""
     echo "Options:"
-    echo "  -u, --user USER     Utilisateur SSH (defaut: root)"
-    echo "  -p, --port PORT     Port SSH (defaut: 22)"
-    echo "  -i, --identity KEY  Fichier de cle SSH"
-    echo "  -h, --help          Affiche cette aide"
+    echo "  -u, --user USER       Utilisateur SSH (defaut: root)"
+    echo "  -p, --port PORT       Port SSH (defaut: 22)"
+    echo "  -P, --password [PWD]  Authentification par mot de passe (necessite sshpass)"
+    echo "                        Si PWD omis, un prompt demandera le mot de passe"
+    echo "  -i, --identity KEY    Fichier de cle SSH"
+    echo "  -h, --help            Affiche cette aide"
     echo ""
     echo "Exemples:"
     echo "  $0 serveur.example.com"
     echo "  $0 -u admin -p 2222 192.168.1.100"
     echo "  $0 -u admin -i ~/.ssh/id_rsa serveur.example.com"
+    echo "  $0 -u admin -P serveur.example.com          # Prompt pour le mot de passe"
+    echo "  $0 -u admin -P 'secret' serveur.example.com # Mot de passe en argument"
     echo ""
     echo "Un rapport HTML est automatiquement genere: YYYYMMDD-Hostname-audit.html"
     exit 1
@@ -139,7 +144,13 @@ ssh_exec() {
         opts="$opts -i $SSH_KEY"
     fi
 
-    ssh $opts -p "$REMOTE_PORT" "${REMOTE_USER}@${REMOTE_HOST}" "$cmd" 2>/dev/null
+    if [ -n "$SSH_PASSWORD" ]; then
+        # Mode mot de passe: retirer BatchMode et utiliser sshpass
+        opts=$(echo "$opts" | sed 's/-o BatchMode=yes//')
+        sshpass -p "$SSH_PASSWORD" ssh $opts -p "$REMOTE_PORT" "${REMOTE_USER}@${REMOTE_HOST}" "$cmd" 2>/dev/null
+    else
+        ssh $opts -p "$REMOTE_PORT" "${REMOTE_USER}@${REMOTE_HOST}" "$cmd" 2>/dev/null
+    fi
 }
 
 # Verification si une commande existe sur le serveur distant
@@ -156,10 +167,20 @@ test_ssh_connection() {
         opts="$opts -i $SSH_KEY"
     fi
 
-    if ssh $opts -p "$REMOTE_PORT" "${REMOTE_USER}@${REMOTE_HOST}" "echo 'OK'" >/dev/null 2>&1; then
-        return 0
+    if [ -n "$SSH_PASSWORD" ]; then
+        # Mode mot de passe: retirer BatchMode et utiliser sshpass
+        opts=$(echo "$opts" | sed 's/-o BatchMode=yes//')
+        if sshpass -p "$SSH_PASSWORD" ssh $opts -p "$REMOTE_PORT" "${REMOTE_USER}@${REMOTE_HOST}" "echo 'OK'" >/dev/null 2>&1; then
+            return 0
+        else
+            return 1
+        fi
     else
-        return 1
+        if ssh $opts -p "$REMOTE_PORT" "${REMOTE_USER}@${REMOTE_HOST}" "echo 'OK'" >/dev/null 2>&1; then
+            return 0
+        else
+            return 1
+        fi
     fi
 }
 
@@ -1827,6 +1848,20 @@ parse_arguments() {
                 SSH_KEY="$2"
                 shift 2
                 ;;
+            -P|--password)
+                # Verifier si un mot de passe est fourni en argument
+                if [ -n "$2" ] && [ "${2#-}" = "$2" ]; then
+                    # $2 existe et ne commence pas par '-'
+                    SSH_PASSWORD="$2"
+                    shift 2
+                else
+                    # Pas de mot de passe fourni, demander interactivement
+                    printf "Password: "
+                    read -s SSH_PASSWORD
+                    echo ""
+                    shift 1
+                fi
+                ;;
             -h|--help)
                 usage
                 ;;
@@ -1850,6 +1885,17 @@ parse_arguments() {
 main() {
     # Parser les arguments
     parse_arguments "$@"
+
+    # Verifier si sshpass est disponible quand on utilise un mot de passe
+    if [ -n "$SSH_PASSWORD" ]; then
+        if ! command -v sshpass >/dev/null 2>&1; then
+            print_error "sshpass n'est pas installe. Installez-le avec:"
+            echo "  - Debian/Ubuntu: sudo apt-get install sshpass"
+            echo "  - RHEL/CentOS:   sudo yum install sshpass"
+            echo "  - macOS:         brew install hudochenkov/sshpass/sshpass"
+            exit 1
+        fi
+    fi
 
     # En-tete du rapport
     echo ""
