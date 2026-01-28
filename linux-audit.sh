@@ -1108,7 +1108,8 @@ collect_disk_info() {
     # Store disk data for HTML
     local disk_html_rows=""
 
-    echo "$df_output" | while read line; do
+    while read line; do
+        [ -z "$line" ] && continue
         local fs=$(echo "$line" | awk '{print $1}')
         local fstype=$(echo "$line" | awk '{print $2}')
         local size=$(echo "$line" | awk '{print $3}')
@@ -1136,7 +1137,7 @@ collect_disk_info() {
         else
             printf "  %-25s %-8s %8s %8s %8s %5s%%\n" "$fs" "$fstype" "$size" "$used" "$avail" "$use_percent"
         fi
-    done
+    done <<< "$df_output"
 
     # Statistiques I/O temps reel (iostat-like)
     echo ""
@@ -1155,7 +1156,8 @@ collect_disk_info() {
         printf "  %-12s %10s %10s %8s %8s %8s\n" "------------" "----------" "----------" "--------" "--------" "--------"
 
         io_data="$iostat_output"
-        echo "$iostat_output" | while read line; do
+        while read line; do
+            [ -z "$line" ] && continue
             local dev=$(echo "$line" | awk '{print $1}')
             local rmb=$(echo "$line" | awk '{printf "%.2f", $3}')
             local wmb=$(echo "$line" | awk '{printf "%.2f", $4}')
@@ -1182,7 +1184,7 @@ collect_disk_info() {
             else
                 printf "  %-12s %10s %10s %8s %8s\n" "$dev" "$rmb" "$wmb" "${await}ms" "${util}%"
             fi
-        done
+        done <<< "$iostat_output"
     else
         # Fallback: calcul depuis /proc/diskstats (mesure sur 5 secondes)
         print_info "Note" "iostat non disponible, calcul depuis /proc/diskstats"
@@ -1225,7 +1227,8 @@ collect_disk_info() {
             printf "  %-12s %10s %10s %8s %8s %8s\n" "Device" "rMB/s" "wMB/s" "await" "%util" "Statut"
             printf "  %-12s %10s %10s %8s %8s %8s\n" "------------" "----------" "----------" "--------" "--------" "--------"
 
-            echo "$io_data" | while read line; do
+            while read line; do
+                [ -z "$line" ] && continue
                 local dev=$(echo "$line" | awk '{print $1}')
                 local rmb=$(echo "$line" | awk '{print $2}')
                 local wmb=$(echo "$line" | awk '{print $3}')
@@ -1252,7 +1255,7 @@ collect_disk_info() {
                 else
                     printf "  %-12s %10s %10s %8s %8s\n" "$dev" "$rmb" "$wmb" "${await}ms" "${util}%"
                 fi
-            done
+            done <<< "$io_data"
         else
             print_warning "Impossible de collecter les statistiques I/O"
         fi
