@@ -1099,7 +1099,7 @@ collect_disk_info() {
     print_header "DISQUES ET SYSTEMES DE FICHIERS"
 
     # df pour l'espace disque (avec type de filesystem)
-    local df_output=$(ssh_exec "LANG=C df -ThP 2>/dev/null | grep -vE '^Filesystem|tmpfs|cdrom|devtmpfs'")
+    local df_output=$(ssh_exec "LC_ALL=C LANG=C df -ThP 2>/dev/null | grep -vE '^Filesystem|^Sys|tmpfs|cdrom|devtmpfs'")
 
     echo ""
     printf "  %-25s %-8s %8s %8s %8s %6s\n" "Filesystem" "Type" "Size" "Used" "Avail" "Use%"
@@ -1148,7 +1148,7 @@ collect_disk_info() {
 
     # Essayer iostat d'abord (sysstat)
     if remote_cmd_exists "iostat"; then
-        iostat_output=$(ssh_exec "LANG=C iostat -xdmy 5 1 2>/dev/null | grep -E '^(sd|vd|nvme|xvd|dm-)' | head -20")
+        iostat_output=$(ssh_exec "LANG=C iostat -xdmy 5 1 2>/dev/null | grep -E '^(sd|vd|nvme|xvd|dm-|mmcblk)' | head -20")
     fi
 
     if [ -n "$iostat_output" ]; then
@@ -1202,7 +1202,7 @@ collect_disk_info() {
                 dev[$3]=$3; rd1[$3]=$6; wr1[$3]=$10; io1[$3]=$13; iot1[$3]=$10+$6
                 next
             }
-            $3 in dev && $3 ~ /^(sd[a-z]|vd[a-z]|nvme[0-9]+n[0-9]+|xvd[a-z]|dm-[0-9]+)$/ {
+            $3 in dev && $3 ~ /^(sd[a-z]|vd[a-z]|nvme[0-9]+n[0-9]+|xvd[a-z]|dm-[0-9]+|mmcblk[0-9]+p?[0-9]*)$/ {
                 rd_sec = ($6 - rd1[$3]) / 5
                 wr_sec = ($10 - wr1[$3]) / 5
                 rd_mb = rd_sec * 512 / 1048576
