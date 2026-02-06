@@ -20,17 +20,17 @@ No build or test commands - this is a single bash script.
 
 ## Architecture
 
-The script (~1900 lines) is organized into numbered sections:
+The script (~2000 lines) is organized into numbered sections:
 
 | Section | Lines | Purpose |
 |---------|-------|---------|
 | 1 | ~1-60 | Global variables, thresholds, colors |
 | 2 | ~62-180 | Utility functions (print_*, ssh_exec, alerts) |
 | 2B | ~182-647 | HTML generation functions (html_*) |
-| 3 | ~648-1538 | Data collection functions (collect_*) |
-| 4 | ~1539-1741 | SAR/sysstat data collection and analysis |
-| 5 | ~1742-1811 | Alert summary generation |
-| 6 | ~1812-end | Main function, argument parsing |
+| 3 | ~648-1598 | Data collection functions (collect_*) |
+| 4 | ~1599-1780 | SAR/sysstat data collection and analysis |
+| 5 | ~1781-1850 | Alert summary generation |
+| 6 | ~1851-end | Main function, argument parsing |
 
 ### Key Functions
 
@@ -43,7 +43,7 @@ The script (~1900 lines) is organized into numbered sections:
   - `collect_load_info()` - Load averages vs CPU count
   - `collect_disk_info()` - Filesystem usage with type column
   - `collect_network_info()` - Interfaces, IPs, routing
-  - `collect_process_info()` - Top processes by CPU/memory
+  - `collect_process_info()` - Top processes by CPU/memory/disk I/O
   - `collect_sar_data()` - Historical SAR metrics
 - `html_*()` - HTML generation helpers that append to `HTML_CONTENT` global variable
 - `generate_cpu_sar_chart()` - Generates SVG stacked area chart from SAR CPU data (shows %user, %system, %iowait, %idle)
