@@ -1509,6 +1509,23 @@ collect_process_info() {
         done
     fi
 
+    echo ""
+    echo "  Top 5 processus par I/O Disque:"
+    printf "  %-8s %-8s %-12s %-12s %s\n" "USER" "PID" "READ(Ko)" "WRITE(Ko)" "COMMAND"
+    printf "  %-8s %-8s %-12s %-12s %s\n" "--------" "--------" "------------" "------------" "---------------"
+
+    local top_io=$(ssh_exec "for p in \$(ls -d /proc/[0-9]* 2>/dev/null); do pid=\${p##*/}; [ -r \$p/io ] || continue; rb=\$(awk '/^read_bytes:/{print \$2}' \$p/io 2>/dev/null); wb=\$(awk '/^write_bytes:/{print \$2}' \$p/io 2>/dev/null); [ -n \"\$rb\" ] && [ -n \"\$wb\" ] || continue; t=\$((\$rb+\$wb)); [ \$t -gt 0 ] || continue; u=\$(stat -c '%U' \$p 2>/dev/null); u=\${u:-?}; c=\$(cat \$p/comm 2>/dev/null); c=\${c:-?}; printf '%d %s %s %d %d %s\n' \$t \"\$u\" \$pid \$((\$rb/1024)) \$((\$wb/1024)) \"\$c\"; done 2>/dev/null | sort -rn | head -5 | awk '{print \$2,\$3,\$4,\$5,\$6}'")
+    if [ -n "$top_io" ]; then
+        echo "$top_io" | while read line; do
+            local user=$(echo "$line" | awk '{print $1}')
+            local pid=$(echo "$line" | awk '{print $2}')
+            local read_kb=$(echo "$line" | awk '{print $3}')
+            local write_kb=$(echo "$line" | awk '{print $4}')
+            local cmd=$(echo "$line" | awk '{print $5}' | cut -c1-30)
+            printf "  %-8s %-8s %-12s %-12s %s\n" "$user" "$pid" "$read_kb" "$write_kb" "$cmd"
+        done
+    fi
+
     # HTML output
     if [ -n "$HTML_OUTPUT" ]; then
         html_section_start "Top Processus"
@@ -1550,6 +1567,27 @@ collect_process_info() {
                 local escaped_cmd=$(html_escape "$cmd")
                 html_table_row "${user}|${pid}|${cpu}|${mem}|${escaped_cmd}"
             done <<< "$top_mem"
+        fi
+        html_table_end
+        html_append "            </div>
+"
+
+        # Top I/O Disque
+        html_append "            <h3 style=\"color: #a0a0a0; font-size: 1em; margin: 15px 0 10px 0;\">Top 5 par I/O Disque</h3>
+            <div class=\"table-process\">
+"
+        html_table_start "User,PID,READ (Ko),WRITE (Ko),Commande"
+        if [ -n "$top_io" ]; then
+            while IFS= read -r line; do
+                [ -z "$line" ] && continue
+                local user=$(echo "$line" | awk '{print $1}')
+                local pid=$(echo "$line" | awk '{print $2}')
+                local read_kb=$(echo "$line" | awk '{print $3}')
+                local write_kb=$(echo "$line" | awk '{print $4}')
+                local cmd=$(echo "$line" | awk '{print $5}' | cut -c1-40)
+                local escaped_cmd=$(html_escape "$cmd")
+                html_table_row "${user}|${pid}|${read_kb}|${write_kb}|${escaped_cmd}"
+            done <<< "$top_io"
         fi
         html_table_end
         html_append "            </div>
