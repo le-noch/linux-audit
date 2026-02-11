@@ -14,6 +14,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 # With SSH options
 ./linux-audit.sh -u admin -p 2222 -i ~/.ssh/id_rsa hostname
+
+# With password authentication (requires sshpass)
+./linux-audit.sh -u admin -P hostname           # interactive prompt
+./linux-audit.sh -u admin -P 'secret' hostname   # password as argument
 ```
 
 No build or test commands - this is a single bash script.
@@ -25,16 +29,18 @@ The script (~2000 lines) is organized into numbered sections:
 | Section | Lines | Purpose |
 |---------|-------|---------|
 | 1 | ~1-60 | Global variables, thresholds, colors |
-| 2 | ~62-180 | Utility functions (print_*, ssh_exec, alerts) |
-| 2B | ~182-647 | HTML generation functions (html_*) |
-| 3 | ~648-1598 | Data collection functions (collect_*) |
-| 4 | ~1599-1780 | SAR/sysstat data collection and analysis |
-| 5 | ~1781-1850 | Alert summary generation |
-| 6 | ~1851-end | Main function, argument parsing |
+| 2 | ~63-202 | Utility functions (print_*, ssh_exec, alerts) |
+| 2B | ~203-668 | HTML generation functions (html_*) |
+| 3 | ~669-1600 | Data collection functions (collect_*) |
+| 4 | ~1601-1803 | SAR/sysstat data collection and analysis |
+| 5 | ~1804-1873 | Alert summary generation |
+| 6 | ~1874-end | Main function, argument parsing |
 
 ### Key Functions
 
 - `ssh_exec()` - Executes commands on remote server via SSH
+- `detect_distro()` - Detects Linux distribution (RHEL, Debian, Ubuntu, Oracle, etc.)
+- `detect_sar_path()` - Locates SAR data files (supports old and new sysstat paths)
 - `collect_*()` - Data collection functions:
   - `collect_system_info()` - OS, kernel, hostname, uptime
   - `collect_cpu_info()` - CPU model, cores, current usage
@@ -79,7 +85,10 @@ The script (~2000 lines) is organized into numbered sections:
 Alert thresholds are defined at the top of the script (lines ~23-35):
 ```bash
 THRESH_RAM_WARN=75    THRESH_RAM_CRIT=85
+THRESH_SWAP_WARN=30   THRESH_SWAP_CRIT=50
 THRESH_CPU_WARN=70    THRESH_CPU_CRIT=85
+THRESH_LOAD_WARN=1.0  THRESH_LOAD_CRIT=1.5
+THRESH_IOWAIT_WARN=15 THRESH_IOWAIT_CRIT=25
 THRESH_DISK_WARN=80   THRESH_DISK_CRIT=90
 ```
 
