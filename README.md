@@ -188,12 +188,17 @@ Si sysstat est installé sur le serveur distant, le script exporte les données 
 - Format du nom: `YYYYMMDD-Hostname-sar.gz`
 - Exemple: `20250125-webserver01-sar.gz`
 
-Pour lire le fichier:
+Pour lire le fichier en ligne de commande:
 ```bash
 zcat 20250125-webserver01-sar.gz | less
 zcat 20250125-webserver01-sar.gz | grep -A 20 "CPU"
 gunzip -c 20250125-webserver01-sar.gz > sar-data.txt
 ```
+
+Pour une analyse graphique, le fichier peut être exploité avec **ksar** (ou son fork **vlsi/ksar**),
+un outil Java qui génère des graphiques interactifs à partir des données SAR :
+- Projet : https://github.com/vlsi/ksar (fork de http://sourceforge.net/projects/ksar/)
+- Ouvrir le fichier décompressé (`gunzip`) directement dans ksar via *File > Load from file*
 
 Si sysstat n'est pas installé, un message d'avertissement est affiché et le script continue la collecte des autres informations.
 
@@ -269,10 +274,10 @@ THRESH_DISK_CRIT=90
 - Le script utilise des fallbacks quand possible
 - Vérifier les permissions de l'utilisateur SSH
 
-## Génération
+## Auteur
 
-Ce script a été généré avec l'assistance de Claude (Anthropic) via Claude Code.
-Les instructions, la conception et la validation ont été réalisées par Aurélien DREVET.
+Aurélien DREVET — conception, instructions et validation.
+Développé avec l'assistance de Claude (Anthropic) via Claude Code.
 
 ## Licence
 

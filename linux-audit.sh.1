@@ -154,6 +154,12 @@ Le fichier est cree dans le repertoire courant.
 Fichier compresse contenant les donnees SAR exportees du serveur.
 Genere uniquement si sysstat est installe sur le serveur distant.
 Le fichier est cree dans le repertoire courant.
+Il peut etre exploite graphiquement avec
+.B ksar
+(ou son fork
+.BR vlsi/ksar ,
+disponible sur https://github.com/vlsi/ksar), un outil Java
+permettant de generer des graphiques interactifs a partir des donnees SAR.
 .SH EXEMPLES
 Audit basique d'un serveur en tant que root:
 .PP
@@ -207,12 +213,23 @@ $ for host in srv1 srv2 srv3; do
 .fi
 .RE
 .PP
-Lire le fichier SAR exporte:
+Lire le fichier SAR exporte en ligne de commande:
 .PP
 .RS
 .nf
 $ zcat 20250125-serveur-sar.gz | less
 $ zcat 20250125-serveur-sar.gz | grep -A 20 "CPU"
+$ gunzip -c 20250125-serveur-sar.gz > sar-data.txt
+.fi
+.RE
+.PP
+Exploiter le fichier SAR avec ksar (analyse graphique):
+.PP
+.RS
+.nf
+$ gunzip -c 20250125-serveur-sar.gz > sar-data.txt
+# Ouvrir sar-data.txt dans vlsi/ksar via File > Load from file
+# Projet: https://github.com/vlsi/ksar
 .fi
 .RE
 .SH COMPATIBILITE
@@ -303,7 +320,8 @@ Aucune donnee sensible n'est stockee localement hormis le fichier SAR.
 Rapporter les bogues a l'auteur ou via le systeme de suivi de bogues
 du projet.
 .SH AUTEUR
-Script genere par Claude (Anthropic), Janvier 2025.
+Aurelien DREVET \(em conception, instructions et validation.
+Developpe avec l'assistance de Claude (Anthropic) via Claude Code.
 .SH VOIR AUSSI
 .BR ssh (1),
 .BR scp (1),
