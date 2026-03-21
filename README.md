@@ -12,6 +12,7 @@ Script de collecte d'informations système et performances pour audits d'adminis
 - bash (version 3.x ou supérieure)
 - ssh et scp (client OpenSSH)
 - gzip
+- sshpass (optionnel, uniquement pour l'authentification par mot de passe via `-P`)
 
 ### Côté serveur (machine auditée)
 - bash
@@ -63,10 +64,12 @@ man linux-audit.sh
 Usage: linux-audit.sh [OPTIONS] <hostname_ou_ip>
 
 Options:
-  -u, --user USER     Utilisateur SSH (défaut: root)
-  -p, --port PORT     Port SSH (défaut: 22)
-  -i, --identity KEY  Fichier de clé SSH
-  -h, --help          Affiche l'aide
+  -u, --user USER         Utilisateur SSH (défaut: root)
+  -p, --port PORT         Port SSH (défaut: 22)
+  -P, --password [PWD]    Authentification par mot de passe (nécessite sshpass)
+                          Si PWD omis, un prompt demandera le mot de passe
+  -i, --identity KEY      Fichier de clé SSH
+  -h, --help              Affiche l'aide
 
 Un rapport HTML est automatiquement généré: YYYYMMDD-Hostname-audit.html
 ```
@@ -76,13 +79,17 @@ Un rapport HTML est automatiquement généré: YYYYMMDD-Hostname-audit.html
 ```bash
 # Connexion basique en root
 ./linux-audit.sh serveur.example.com
-# Génère automatiquement: 20250125-webserver01-audit.html
+# Génère automatiquement: 20260321-webserver01-audit.html
 
 # Connexion avec un utilisateur spécifique
 ./linux-audit.sh -u admin serveur.example.com
 
 # Connexion avec clé SSH et port personnalisé
 ./linux-audit.sh -u admin -i ~/.ssh/id_rsa -p 2222 192.168.1.100
+
+# Authentification par mot de passe (nécessite sshpass)
+./linux-audit.sh -u admin -P serveur.example.com           # prompt interactif
+./linux-audit.sh -u admin -P 'secret' serveur.example.com  # mot de passe en argument
 
 # Sauvegarder le rapport texte dans un fichier
 ./linux-audit.sh serveur.example.com > rapport-serveur.txt
@@ -126,6 +133,7 @@ Le script collecte les informations suivantes:
 ### Processus
 - Top 5 processus par utilisation CPU
 - Top 5 processus par utilisation mémoire
+- Top 5 processus par I/O disque (lectures/écritures depuis /proc/[pid]/io)
 
 ### Données SAR (si sysstat installé)
 - Export complet des données historiques
