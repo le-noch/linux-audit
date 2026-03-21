@@ -154,6 +154,12 @@ Le fichier est cree dans le repertoire courant.
 Fichier compresse contenant les donnees SAR exportees du serveur.
 Genere uniquement si sysstat est installe sur le serveur distant.
 Le fichier est cree dans le repertoire courant.
+Il peut etre exploite graphiquement avec
+.B ksar
+(ou son fork
+.BR vlsi/ksar ,
+disponible sur https://github.com/vlsi/ksar), un outil Java
+permettant de generer des graphiques interactifs a partir des donnees SAR.
 .SH EXEMPLES
 Audit basique d'un serveur en tant que root:
 .PP
@@ -207,12 +213,23 @@ $ for host in srv1 srv2 srv3; do
 .fi
 .RE
 .PP
-Lire le fichier SAR exporte:
+Lire le fichier SAR exporte en ligne de commande:
 .PP
 .RS
 .nf
 $ zcat 20250125-serveur-sar.gz | less
 $ zcat 20250125-serveur-sar.gz | grep -A 20 "CPU"
+$ gunzip -c 20250125-serveur-sar.gz > sar-data.txt
+.fi
+.RE
+.PP
+Exploiter le fichier SAR avec ksar (analyse graphique):
+.PP
+.RS
+.nf
+$ gunzip -c 20250125-serveur-sar.gz > sar-data.txt
+# Ouvrir sar-data.txt dans vlsi/ksar via File > Load from file
+# Projet: https://github.com/vlsi/ksar
 .fi
 .RE
 .SH COMPATIBILITE
@@ -268,6 +285,22 @@ Acces SSH configure
 Outils standard Linux (coreutils)
 .IP \(bu 2
 sysstat (optionnel, pour l'export des donnees SAR)
+.IP \(bu 2
+Aucun privilege root requis \(em toutes les commandes utilisent des fichiers
+lisibles par tout utilisateur (/proc/meminfo, /proc/cpuinfo, df, ps, etc.)
+.PP
+.B Nuances pour les utilisateurs non-root :
+.IP \(bu 2
+.B Top I/O disque :
+/proc/[pid]/io n'est lisible que par le proprietaire du processus ou root.
+Un utilisateur standard ne verra que les I/O de ses propres processus
+(les acces refuses sont ignores silencieusement).
+.IP \(bu 2
+.B Donnees SAR :
+les fichiers /var/log/sa/ ou /var/log/sysstat/ necessitent souvent
+l'appartenance au groupe
+.B adm
+(Debian/Ubuntu) ou des permissions explicites (RHEL/CentOS).
 .SH PERSONNALISATION
 Les seuils d'alerte peuvent etre modifies en editant les variables
 au debut du script:
@@ -290,6 +323,13 @@ THRESH_DISK_CRIT=90
 .RE
 .SH SECURITE
 .IP \(bu 2
+Aucun privilege root requis, ni sur la machine locale ni sur la machine cible.
+Le script peut etre lance par n'importe quel utilisateur ayant acces SSH au serveur.
+L'utilisateur SSH par defaut est
+.B root
+mais peut etre remplace par tout compte via l'option
+.BR \-u .
+.IP \(bu 2
 Le script utilise BatchMode=yes pour SSH (pas de prompt interactif)
 .IP \(bu 2
 StrictHostKeyChecking=no est utilise par defaut. Dans un environnement
@@ -303,7 +343,8 @@ Aucune donnee sensible n'est stockee localement hormis le fichier SAR.
 Rapporter les bogues a l'auteur ou via le systeme de suivi de bogues
 du projet.
 .SH AUTEUR
-Script genere par Claude (Anthropic), Janvier 2025.
+Aurelien DREVET \(em conception, instructions et validation.
+Developpe avec l'assistance de Claude (Anthropic) via Claude Code.
 .SH VOIR AUSSI
 .BR ssh (1),
 .BR scp (1),
