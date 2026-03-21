@@ -261,15 +261,14 @@ THRESH_DISK_CRIT=90
 - Le script utilise des fallbacks quand possible
 - Vérifier les permissions de l'utilisateur SSH
 
-## Auteur
+## Génération
 
-Script généré par Claude (Anthropic)
-Date: Janvier 2025
+Ce script a été généré avec l'assistance de Claude (Anthropic) via Claude Code.
+Les instructions, la conception et la validation ont été réalisées par Aurélien DREVET.
 
 ## Licence
 
-Ce script est fourni "tel quel" sans garantie d'aucune sorte.
-Libre d'utilisation et de modification.
+MIT License (voir LICENSE)
 
 ## Voir aussi
 

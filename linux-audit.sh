@@ -5,6 +5,9 @@
 #              pour audits d'administration Linux
 # Compatibilite: RHEL6+, CentOS, Debian, Ubuntu, Oracle Linux
 # Bash: Compatible 3.x+
+# Auteur: Aurélien DREVET
+# Généré avec l'assistance de Claude (Anthropic) via Claude Code
+# Licence: MIT (voir fichier LICENSE)
 #===============================================================================
 
 #-------------------------------------------------------------------------------
