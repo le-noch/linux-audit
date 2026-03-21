@@ -1,6 +1,7 @@
 #!/bin/bash
 #===============================================================================
 # Script: linux-audit.sh
+# Version: 1.0
 # Description: Collecte d'informations systeme et performances via SSH
 #              pour audits d'administration Linux
 # Compatibilite: RHEL6+, CentOS, Debian, Ubuntu, Oracle Linux
