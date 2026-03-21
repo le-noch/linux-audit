@@ -63,6 +63,18 @@ The script (~2000 lines) is organized into numbered sections:
 4. HTML content accumulated in `HTML_CONTENT` variable
 5. At end, HTML written to `YYYYMMDD-Hostname-audit.html`
 
+## Privilege Requirements
+
+No root required on either machine:
+- **Local machine**: any user with `ssh`/`gzip` available can run the script
+- **Remote machine**: any SSH user works; all collected data comes from world-readable sources (`/proc/meminfo`, `/proc/cpuinfo`, `/proc/loadavg`, `/proc/diskstats`, `/proc/net/dev`, `df`, `ps`, `uname`, etc.)
+
+Two limitations apply for non-root remote users:
+- **Disk I/O per process** (`collect_process_info`): `/proc/[pid]/io` is only readable by the process owner or root. A non-root user will only see I/O stats for their own processes. The script handles this gracefully with `[ -r $p/io ] || continue`.
+- **SAR data** (`collect_sar_data`): SAR files in `/var/log/sa/` or `/var/log/sysstat/` may require membership in the `adm` group (Debian/Ubuntu) or explicit read permissions (RHEL/CentOS). If unreadable, the SAR section is skipped with a warning.
+
+The default SSH user is `root` (convenience default only), overridable with `-u`.
+
 ## Technical Constraints
 
 ### Bash 3.x Compatibility (RHEL6 Support)

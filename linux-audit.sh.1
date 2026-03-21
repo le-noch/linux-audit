@@ -285,6 +285,22 @@ Acces SSH configure
 Outils standard Linux (coreutils)
 .IP \(bu 2
 sysstat (optionnel, pour l'export des donnees SAR)
+.IP \(bu 2
+Aucun privilege root requis \(em toutes les commandes utilisent des fichiers
+lisibles par tout utilisateur (/proc/meminfo, /proc/cpuinfo, df, ps, etc.)
+.PP
+.B Nuances pour les utilisateurs non-root :
+.IP \(bu 2
+.B Top I/O disque :
+/proc/[pid]/io n'est lisible que par le proprietaire du processus ou root.
+Un utilisateur standard ne verra que les I/O de ses propres processus
+(les acces refuses sont ignores silencieusement).
+.IP \(bu 2
+.B Donnees SAR :
+les fichiers /var/log/sa/ ou /var/log/sysstat/ necessitent souvent
+l'appartenance au groupe
+.B adm
+(Debian/Ubuntu) ou des permissions explicites (RHEL/CentOS).
 .SH PERSONNALISATION
 Les seuils d'alerte peuvent etre modifies en editant les variables
 au debut du script:
@@ -306,6 +322,13 @@ THRESH_DISK_CRIT=90
 .fi
 .RE
 .SH SECURITE
+.IP \(bu 2
+Aucun privilege root requis, ni sur la machine locale ni sur la machine cible.
+Le script peut etre lance par n'importe quel utilisateur ayant acces SSH au serveur.
+L'utilisateur SSH par defaut est
+.B root
+mais peut etre remplace par tout compte via l'option
+.BR \-u .
 .IP \(bu 2
 Le script utilise BatchMode=yes pour SSH (pas de prompt interactif)
 .IP \(bu 2

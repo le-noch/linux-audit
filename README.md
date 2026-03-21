@@ -19,6 +19,14 @@ Script de collecte d'informations système et performances pour audits d'adminis
 - Accès SSH configuré (clé ou mot de passe)
 - Outils standard Linux (coreutils)
 - sysstat (optionnel, pour les données SAR)
+- **Aucun privilège root requis** : toutes les commandes utilisent des fichiers
+  lisibles par tout utilisateur (`/proc/meminfo`, `/proc/cpuinfo`, `df`, `ps`, etc.)
+
+> **Nuances pour les utilisateurs non-root :**
+> - **Top I/O disque** : `/proc/[pid]/io` n'est lisible que par le propriétaire du processus ou root.
+>   Un utilisateur standard ne verra que les I/O de ses propres processus (le script gère gracieusement les accès refusés).
+> - **Données SAR** : les fichiers `/var/log/sa/` ou `/var/log/sysstat/` nécessitent souvent
+>   l'appartenance au groupe `adm` (Debian/Ubuntu) ou des permissions explicites (RHEL/CentOS).
 
 ## Installation
 
@@ -249,6 +257,9 @@ THRESH_DISK_CRIT=90
 
 ## Sécurité
 
+- **Aucun privilège root requis**, ni sur la machine locale ni sur la machine cible.
+  Le script peut être lancé par n'importe quel utilisateur ayant accès SSH au serveur.
+  L'utilisateur SSH par défaut est `root` mais peut être remplacé par tout compte via `-u`.
 - Le script utilise `BatchMode=yes` pour SSH (pas de prompt interactif)
 - `StrictHostKeyChecking=no` est utilisé (attention en environnement sensible, modifier si nécessaire)
 - Aucune donnée sensible n'est stockée localement hormis le fichier SAR
