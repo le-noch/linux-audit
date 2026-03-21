@@ -1,6 +1,6 @@
 .\" Manpage for linux-audit.sh
 .\" Contact: N/A
-.TH LINUX-AUDIT.SH 1 "Janvier 2025" "1.0" "Manuel utilisateur linux-audit.sh"
+.TH LINUX-AUDIT.SH 1 "Mars 2026" "1.0" "Manuel utilisateur linux-audit.sh"
 .SH NOM
 linux-audit.sh \- Script de collecte d'informations systeme et performances Linux via SSH
 .SH SYNOPSIS
@@ -39,6 +39,13 @@ Par defaut: \fB22\fR
 .TP
 .BR \-i ", " \-\-identity " " \fIKEY\fR
 Specifie le fichier de cle privee SSH a utiliser pour l'authentification.
+.TP
+.BR \-P ", " \-\-password " [" \fIPWD\fR ]
+Authentification par mot de passe (necessite
+.BR sshpass ).
+Si \fIPWD\fR est omis, un prompt interactif demandera le mot de passe.
+Si \fIPWD\fR est fourni en argument, il est utilise directement
+(attention a la visibilite dans l'historique shell).
 .TP
 .BR \-h ", " \-\-help
 Affiche l'aide et quitte.
@@ -104,6 +111,8 @@ Statistiques RX/TX par interface
 Top 5 processus par utilisation CPU
 .IP \(bu 2
 Top 5 processus par utilisation memoire
+.IP \(bu 2
+Top 5 processus par I/O disque (lectures et ecritures depuis /proc/[pid]/io)
 .SS Donnees SAR (optionnel)
 .IP \(bu 2
 Export complet des donnees sysstat historiques
@@ -167,6 +176,15 @@ Audit avec cle SSH et port personnalise:
 .RS
 .nf
 $ linux-audit.sh -u admin -i ~/.ssh/id_rsa -p 2222 192.168.1.100
+.fi
+.RE
+.PP
+Authentification par mot de passe (necessite sshpass):
+.PP
+.RS
+.nf
+$ linux-audit.sh -u admin -P serveur.example.com
+$ linux-audit.sh -u admin -P 'secret' serveur.example.com
 .fi
 .RE
 .PP
@@ -239,6 +257,8 @@ bash (version 3.x minimum)
 ssh et scp (client OpenSSH)
 .IP \(bu 2
 gzip
+.IP \(bu 2
+sshpass (optionnel, requis uniquement pour l'option \fB\-P\fR)
 .SS Serveur audite
 .IP \(bu 2
 bash
