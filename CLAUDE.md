@@ -113,6 +113,13 @@ The script generates:
   - Color-coded alerts matching terminal output
 - `YYYYMMDD-Hostname-sar.gz` - Compressed SAR data export (if sysstat available)
 
+## Companion Files
+
+- `linux-audit.sh.1` — **man page** (roff) du script ; à mettre à jour en même temps que le script quand options/sortie changent
+- `linux-audit.README` — README texte historique (distribué avec le script)
+- `README.md` — README GitHub ; à maintenir **en même temps** que ce CLAUDE.md (convention du dépôt racine)
+- `LICENSE` — licence du projet
+
 ## Code Style
 
 - French comments throughout (legacy codebase)
