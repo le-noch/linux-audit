@@ -20,7 +20,6 @@ RED='\033[0;31m'
 YELLOW='\033[1;33m'
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
-CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m'  # No Color
 
@@ -55,13 +54,14 @@ SSH_PASSWORD=""
 # pour que les chemins contenant des espaces restent un seul argument
 SSH_ARGS=()
 TIMESTAMP=$(date +%Y%m%d)
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Variables pour la sortie HTML
 HTML_OUTPUT=""
 HTML_CONTENT=""
 
-# Tableaux pour stocker les alertes (compatible bash 3.x)
+# Alertes: une par ligne (compatible bash 3.x, sans tableau). Le saut de
+# ligne ne peut pas apparaitre dans un message, contrairement a "|"
+# (point de montage, nom de device...)
 ALERTS_CRITICAL=""
 ALERTS_WARNING=""
 
@@ -152,7 +152,8 @@ add_alert_critical() {
     if [ -z "$ALERTS_CRITICAL" ]; then
         ALERTS_CRITICAL="$1"
     else
-        ALERTS_CRITICAL="${ALERTS_CRITICAL}|$1"
+        ALERTS_CRITICAL="${ALERTS_CRITICAL}
+$1"
     fi
 }
 
@@ -160,7 +161,8 @@ add_alert_warning() {
     if [ -z "$ALERTS_WARNING" ]; then
         ALERTS_WARNING="$1"
     else
-        ALERTS_WARNING="${ALERTS_WARNING}|$1"
+        ALERTS_WARNING="${ALERTS_WARNING}
+$1"
     fi
 }
 
@@ -902,7 +904,8 @@ collect_cpu_info() {
         total1=\$((user + nice + system + idle + iowait + irq + softirq + steal))
         total2=\$((user2 + nice2 + system2 + idle2 + iowait2 + irq2 + softirq2 + steal2))
 
-        idle_diff=\$((idle2 - idle))
+        # iowait n'est pas du temps CPU occupe (il est affiche a part)
+        idle_diff=\$(( (idle2 - idle) + (iowait2 - iowait) ))
         total_diff=\$((total2 - total1))
 
         if [ \$total_diff -gt 0 ]; then
@@ -943,7 +946,6 @@ collect_cpu_info() {
     fi
 
     local iowait_status="ok"
-    local iowait_badge=""
 
     if [ -n "$iowait" ] && echo "$iowait" | grep -qE '^[0-9]+$'; then
         local iowait_display="${iowait}%"
@@ -952,12 +954,10 @@ collect_cpu_info() {
             iowait_display="${iowait}%  ${RED}ALERTE: > ${THRESH_IOWAIT_CRIT}%${NC}"
             add_alert_critical "I/O Wait a ${iowait}% (seuil critique: ${THRESH_IOWAIT_CRIT}%)"
             iowait_status="crit"
-            iowait_badge="critical"
         elif [ "$iowait" -ge "$THRESH_IOWAIT_WARN" ] 2>/dev/null; then
             iowait_display="${iowait}%  ${YELLOW}WARNING: > ${THRESH_IOWAIT_WARN}%${NC}"
             add_alert_warning "I/O Wait a ${iowait}% (seuil warning: ${THRESH_IOWAIT_WARN}%)"
             iowait_status="warn"
-            iowait_badge="warning"
         fi
 
         printf "  %-14s: %b\n" "I/O Wait" "$iowait_display"
@@ -1043,17 +1043,14 @@ collect_memory_info() {
     print_info "RAM Totale" "${mem_total_mb} MB"
 
     local mem_used_display="${mem_used_mb} MB (${mem_used_percent}%)"
-    local mem_status="ok"
 
     # Analyse RAM
     if [ "$mem_used_percent" -ge "$THRESH_RAM_CRIT" ] 2>/dev/null; then
         mem_used_display="${mem_used_mb} MB (${mem_used_percent}%)  ${RED}ALERTE: > ${THRESH_RAM_CRIT}%${NC}"
         add_alert_critical "RAM utilisee a ${mem_used_percent}% (seuil critique: ${THRESH_RAM_CRIT}%)"
-        mem_status="crit"
     elif [ "$mem_used_percent" -ge "$THRESH_RAM_WARN" ] 2>/dev/null; then
         mem_used_display="${mem_used_mb} MB (${mem_used_percent}%)  ${YELLOW}WARNING: > ${THRESH_RAM_WARN}%${NC}"
         add_alert_warning "RAM utilisee a ${mem_used_percent}% (seuil warning: ${THRESH_RAM_WARN}%)"
-        mem_status="warn"
     fi
 
     printf "  %-14s: %b\n" "RAM Utilisee" "$mem_used_display"
@@ -1063,10 +1060,12 @@ collect_memory_info() {
 
     # HTML output
     if [ -n "$HTML_OUTPUT" ]; then
-        # Calcul des pourcentages pour la barre empilee
-        local used_real_mb=$((mem_used_mb - mem_buffers_mb - mem_cached_mb))
+        # Calcul des pourcentages pour la barre empilee: memoire des
+        # applications = total - libre - buffers - cache (mem_used_mb exclut
+        # deja buffers/cache: les soustraire a nouveau les comptait deux fois)
+        local used_real_mb=$((mem_total_mb - mem_free_mb - mem_buffers_mb - mem_cached_mb))
         if [ "$used_real_mb" -lt 0 ]; then
-            used_real_mb=$mem_used_mb
+            used_real_mb=0
         fi
         local used_real_percent=$((used_real_mb * 100 / mem_total_mb))
         local buffers_percent=$((mem_buffers_mb * 100 / mem_total_mb))
@@ -1236,7 +1235,10 @@ collect_load_info() {
         html_info_row "Load 1/5/15" "$load1 / $load5 / $load15"
         html_info_row "Nb CPUs" "$NB_CPUS"
         if [ -n "$load_badge" ]; then
-            html_info_row_with_badge "Ratio Load/CPU" "$ratio" "$load_status" "$load_badge"
+            # Classes CSS: badge-critical / badge-warning
+            local load_badge_type="warning"
+            [ "$load_status" = "crit" ] && load_badge_type="critical"
+            html_info_row_with_badge "Ratio Load/CPU" "$ratio" "$load_badge_type" "$load_badge"
         else
             html_info_row "Ratio Load/CPU" "$ratio"
         fi
@@ -1730,64 +1732,35 @@ print_alert_summary() {
     printf "${BOLD}                         SYNTHESE DES ALERTES${NC}\n"
     print_line
 
-    local has_alerts=0
+    html_section_start "Synthese des Alertes"
+    html_append "            <div class=\"alert-section\">
+"
 
-    # Afficher les alertes critiques
+    local alert
     if [ -n "$ALERTS_CRITICAL" ]; then
-        has_alerts=1
-        echo "$ALERTS_CRITICAL" | tr '|' '\n' | while read alert; do
-            if [ -n "$alert" ]; then
-                print_alert_critical "$alert"
-            fi
-        done
+        while IFS= read -r alert; do
+            [ -z "$alert" ] && continue
+            print_alert_critical "$alert"
+            html_alert "critical" "$alert"
+        done <<< "$ALERTS_CRITICAL"
     fi
 
-    # Afficher les alertes warning
     if [ -n "$ALERTS_WARNING" ]; then
-        has_alerts=1
-        echo "$ALERTS_WARNING" | tr '|' '\n' | while read alert; do
-            if [ -n "$alert" ]; then
-                print_alert_warning "$alert"
-            fi
-        done
+        while IFS= read -r alert; do
+            [ -z "$alert" ] && continue
+            print_alert_warning "$alert"
+            html_alert "warning" "$alert"
+        done <<< "$ALERTS_WARNING"
     fi
 
-    if [ "$has_alerts" -eq 0 ]; then
+    if [ -z "$ALERTS_CRITICAL" ] && [ -z "$ALERTS_WARNING" ]; then
         print_success "Aucune alerte detectee - tous les indicateurs sont dans les seuils normaux"
+        html_alert "ok" "Aucune alerte detectee - tous les indicateurs sont dans les seuils normaux"
     fi
 
-    # HTML output
-    if [ -n "$HTML_OUTPUT" ]; then
-        html_section_start "Synthese des Alertes"
-        html_append "            <div class=\"alert-section\">
+    html_append "            </div>
 "
-
-        if [ -n "$ALERTS_CRITICAL" ]; then
-            local alerts_crit=$(echo "$ALERTS_CRITICAL" | tr '|' '\n')
-            while IFS= read -r alert; do
-                if [ -n "$alert" ]; then
-                    html_alert "critical" "$alert"
-                fi
-            done <<< "$alerts_crit"
-        fi
-
-        if [ -n "$ALERTS_WARNING" ]; then
-            local alerts_warn=$(echo "$ALERTS_WARNING" | tr '|' '\n')
-            while IFS= read -r alert; do
-                if [ -n "$alert" ]; then
-                    html_alert "warning" "$alert"
-                fi
-            done <<< "$alerts_warn"
-        fi
-
-        if [ -z "$ALERTS_CRITICAL" ] && [ -z "$ALERTS_WARNING" ]; then
-            html_alert "ok" "Aucune alerte detectee - tous les indicateurs sont dans les seuils normaux"
-        fi
-
-        html_append "            </div>
-"
-        html_section_end
-    fi
+    html_section_end
 }
 
 #-------------------------------------------------------------------------------
