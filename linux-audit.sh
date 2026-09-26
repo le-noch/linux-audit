@@ -37,6 +37,10 @@ THRESH_IOWAIT_WARN=15
 THRESH_IOWAIT_CRIT=25
 THRESH_DISK_WARN=80
 THRESH_DISK_CRIT=90
+# I/O disques temps reel (iostat / diskstats)
+THRESH_DISKIO_UTIL_WARN=70
+THRESH_DISKIO_UTIL_CRIT=90
+THRESH_DISKIO_AWAIT_WARN=50
 
 # Variables de travail
 REMOTE_HOST=""
@@ -245,6 +249,8 @@ float_gt() {
 #-------------------------------------------------------------------------------
 
 html_append() {
+    # Sans rapport HTML demande, les fonctions html_* ne font rien
+    [ -n "$HTML_OUTPUT" ] || return 0
     HTML_CONTENT="${HTML_CONTENT}$1"
 }
 
@@ -571,23 +577,29 @@ generate_cpu_sar_chart() {
 
     # Collecter les donnees SAR CPU des dernieres 24h
     # Format: heure|%user|%nice|%system|%iowait|%steal|%idle
-    local cpu_data=$(ssh_exec "
-        # Fichier SAR du jour
-        today_file=\"\"
-        for f in ${sar_path}/sa[0-9][0-9] ${sar_path}/sa[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]; do
-            [ -f \"\$f\" ] && today_file=\"\$f\"
-        done
-
-        if [ -n \"\$today_file\" ]; then
-            # LC_ALL=C garantit format US (decimales avec point)
-            # Colonnes sar -u: \$1=time [\$2=AM/PM selon config sysstat] CPU %user %nice %system %iowait %steal %idle
-            # L'offset o gere le champ AM/PM optionnel qui decale toutes les colonnes
-            LC_ALL=C sar -u -f \"\$today_file\" 2>/dev/null | grep -E '^[0-9]{2}:[0-9]{2}:[0-9]{2}' | grep -v 'CPU' | awk '{
-                o = (\$2 == \"AM\" || \$2 == \"PM\") ? 1 : 0
-                print \$1\"|\"\$(3+o)\"|\"\$(4+o)\"|\"\$(5+o)\"|\"\$(6+o)\"|\"\$(7+o)\"|\"\$(8+o)
-            }' | tail -144
-        fi
-    ")
+    local remote_script
+    # Fichier SAR le plus recent par date de modification (et non le dernier
+    # dans l'ordre du glob: sa31 passerait devant sa05 en debut de mois)
+    read -r -d '' remote_script <<EOS
+today_file=\$(ls -t ${sar_path}/sa[0-9][0-9] ${sar_path}/sa[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9] 2>/dev/null | head -1)
+[ -n "\$today_file" ] || exit 0
+# LC_ALL=C garantit format US (decimales avec point)
+# Colonnes sar -u: time [AM/PM selon config sysstat] CPU %user %nice %system %iowait %steal %idle
+# Seules les lignes "all" avec des valeurs numeriques sont gardees: exclut
+# l'en-tete et les lignes "LINUX RESTART" (sysstat < 11.1.4)
+LC_ALL=C sar -u -f "\$today_file" 2>/dev/null | awk '
+    \$1 ~ /^[0-9][0-9]:[0-9][0-9]:[0-9][0-9]\$/ {
+        o = (\$2 == "AM" || \$2 == "PM") ? 1 : 0
+        if (\$(2+o) == "all" && \$(3+o) ~ /^[0-9.]+\$/)
+            print \$1"|"\$(3+o)"|"\$(4+o)"|"\$(5+o)"|"\$(6+o)"|"\$(7+o)"|"\$(8+o)
+    }' | tail -144
+EOS
+    # Revalidation locale (donnees distantes): heure HH:MM:SS et 6 nombres
+    local cpu_data=$(ssh_exec "$remote_script" | awk -F'|' '
+        NF == 7 && $1 ~ /^[0-9][0-9]:[0-9][0-9]:[0-9][0-9]$/ {
+            for (i = 2; i <= 7; i++) if ($i !~ /^[0-9]+(\.[0-9]+)?$/) next
+            print
+        }')
 
     if [ -z "$cpu_data" ]; then
         return 1
@@ -609,48 +621,24 @@ generate_cpu_sar_chart() {
     local chart_width=$((width - margin_left - margin_right))
     local chart_height=$((height - margin_top - margin_bottom))
 
-    # Generer les paths SVG pour les aires empilees
-    # On calcule les points pour chaque couche
-    local svg_paths=""
-    local point_index=0
-    local x_step=$(echo "$chart_width $num_points" | awk '{printf "%.2f", $1 / ($2 - 1)}')
-
-    # Arrays pour stocker les valeurs cumulees
-    local points_user=""
-    local points_nice=""
-    local points_system=""
-    local points_iowait=""
-    local points_steal=""
-    local points_idle=""
-
-    # Construire les points pour chaque serie
-    while IFS='|' read -r time user nice system iowait steal idle; do
-        [ -z "$time" ] && continue
-
-        local x=$(echo "$point_index $x_step $margin_left" | awk '{printf "%.1f", $1 * $2 + $3}')
-
-        # Valeurs cumulees (de bas en haut: user, nice, system, iowait, steal, idle)
-        local y_user=$(echo "$user $chart_height $margin_top" | awk '{printf "%.1f", $3 + $2 - ($1 * $2 / 100)}')
-        local cum_nice=$(echo "$user $nice" | awk '{print $1 + $2}')
-        local y_nice=$(echo "$cum_nice $chart_height $margin_top" | awk '{printf "%.1f", $3 + $2 - ($1 * $2 / 100)}')
-        local cum_system=$(echo "$cum_nice $system" | awk '{print $1 + $2}')
-        local y_system=$(echo "$cum_system $chart_height $margin_top" | awk '{printf "%.1f", $3 + $2 - ($1 * $2 / 100)}')
-        local cum_iowait=$(echo "$cum_system $iowait" | awk '{print $1 + $2}')
-        local y_iowait=$(echo "$cum_iowait $chart_height $margin_top" | awk '{printf "%.1f", $3 + $2 - ($1 * $2 / 100)}')
-        local cum_steal=$(echo "$cum_iowait $steal" | awk '{print $1 + $2}')
-        local y_steal=$(echo "$cum_steal $chart_height $margin_top" | awk '{printf "%.1f", $3 + $2 - ($1 * $2 / 100)}')
-        local cum_idle=$(echo "$cum_steal $idle" | awk '{print $1 + $2}')
-        local y_idle=$(echo "$cum_idle $chart_height $margin_top" | awk '{printf "%.1f", $3 + $2 - ($1 * $2 / 100)}')
-
-        points_user="${points_user}${x},${y_user} "
-        points_nice="${points_nice}${x},${y_nice} "
-        points_system="${points_system}${x},${y_system} "
-        points_iowait="${points_iowait}${x},${y_iowait} "
-        points_steal="${points_steal}${x},${y_steal} "
-        points_idle="${points_idle}${x},${y_idle} "
-
-        point_index=$((point_index + 1))
-    done <<< "$cpu_data"
+    # Points des aires empilees (de bas en haut: user, nice, system, iowait,
+    # steal, idle), calcules en une seule passe awk: une ligne par serie
+    local all_points=$(echo "$cpu_data" | awk -F'|' -v n="$num_points" -v cw="$chart_width" -v ch="$chart_height" -v ml="$margin_left" -v mt="$margin_top" '
+        {
+            x = (NR - 1) * cw / (n - 1) + ml
+            cum = 0
+            for (i = 2; i <= 7; i++) {
+                cum += $i
+                pts[i] = pts[i] sprintf("%.1f,%.1f ", x, mt + ch - cum * ch / 100)
+            }
+        }
+        END { for (i = 2; i <= 7; i++) print pts[i] }')
+    local points_user=$(echo "$all_points" | sed -n 1p)
+    local points_nice=$(echo "$all_points" | sed -n 2p)
+    local points_system=$(echo "$all_points" | sed -n 3p)
+    local points_iowait=$(echo "$all_points" | sed -n 4p)
+    local points_steal=$(echo "$all_points" | sed -n 5p)
+    local points_idle=$(echo "$all_points" | sed -n 6p)
 
     # Ligne de base (y = hauteur max)
     local baseline_y=$((margin_top + chart_height))
@@ -797,21 +785,27 @@ collect_cpu_info() {
 
     # Essayer lscpu d'abord
     if remote_cmd_exists "lscpu"; then
-        local lscpu_output=$(ssh_exec "LANG=C lscpu")
-        cpu_model=$(echo "$lscpu_output" | grep "Model name:" | sed 's/Model name:[[:space:]]*//')
-        cpu_sockets=$(echo "$lscpu_output" | grep "Socket(s):" | awk '{print $2}')
-        cpu_cores=$(echo "$lscpu_output" | grep "Core(s) per socket:" | awk '{print $4}')
-        cpu_threads=$(echo "$lscpu_output" | grep "CPU(s):" | head -1 | awk '{print $2}')
-
-        if [ -n "$cpu_sockets" ] && [ -n "$cpu_cores" ]; then
-            local total_cores=$((cpu_sockets * cpu_cores))
-            NB_CPUS=${cpu_threads:-$total_cores}
-        fi
+        # LC_ALL (et non LANG): un LC_* transmis par SSH (SendEnv) l'emporterait
+        local lscpu_output=$(ssh_exec "LC_ALL=C lscpu")
+        cpu_model=$(echo "$lscpu_output" | grep "^Model name:" | head -1 | sed 's/Model name:[[:space:]]*//')
+        # Libelles variables: "Socket(s):" ou "CPU socket(s):" (RHEL6)
+        cpu_sockets=$(echo "$lscpu_output" | grep -E "^(CPU )?[Ss]ocket\(s\):" | head -1 | awk '{print $NF}')
+        cpu_cores=$(echo "$lscpu_output" | grep "^Core(s) per socket:" | head -1 | awk '{print $NF}')
+        cpu_threads=$(echo "$lscpu_output" | grep "^CPU(s):" | head -1 | awk '{print $NF}')
     else
         # Fallback sur /proc/cpuinfo
         cpu_model=$(ssh_exec "grep 'model name' /proc/cpuinfo | head -1 | cut -d':' -f2 | sed 's/^[[:space:]]*//'")
-        cpu_threads=$(ssh_exec "grep -c ^processor /proc/cpuinfo")
-        NB_CPUS=${cpu_threads:-1}
+    fi
+
+    # Nombre de CPU logiques pour le ratio load/CPU: independant des libelles
+    # lscpu (ARM, anciennes versions) pour ne jamais rester a 1 par defaut
+    if ! is_int "$cpu_threads" || [ "$cpu_threads" -lt 1 ]; then
+        cpu_threads=$(ssh_exec "getconf _NPROCESSORS_ONLN 2>/dev/null || grep -c ^processor /proc/cpuinfo")
+    fi
+    if is_int "$cpu_threads" && [ "$cpu_threads" -ge 1 ]; then
+        NB_CPUS=$cpu_threads
+    else
+        cpu_threads=""
     fi
 
     print_info "Modele" "${cpu_model:-N/A}"
@@ -1176,24 +1170,24 @@ collect_disk_info() {
     print_header "DISQUES ET SYSTEMES DE FICHIERS"
 
     # df pour l'espace disque (avec type de filesystem)
-    local df_output=$(ssh_exec "LC_ALL=C LANG=C df -ThP 2>/dev/null | grep -vE '^Filesystem|^Sys|tmpfs|cdrom|devtmpfs'")
+    # Filtrage sur la colonne type et non par grep sur toute la ligne: les
+    # pseudo-fs et images en lecture seule (snaps squashfs, ISO...) sont
+    # toujours pleins a 100% et declencheraient de fausses alertes CRITIQUES
+    local df_output=$(ssh_exec "LC_ALL=C df -ThP 2>/dev/null | awk 'NR > 1 && \$2 !~ /^(tmpfs|devtmpfs|squashfs|iso9660|udf|overlay|nsfs|ramfs)\$/'")
 
     echo ""
     printf "  %-25s %-8s %8s %8s %8s %6s\n" "Filesystem" "Type" "Size" "Used" "Avail" "Use%"
     printf "  %-25s %-8s %8s %8s %8s %6s\n" "-------------------------" "--------" "--------" "--------" "--------" "------"
 
-    # Store disk data for HTML
-    local disk_html_rows=""
+    html_section_start "Disques et Systemes de Fichiers"
+    html_table_start "Filesystem,Type,Taille,Utilise,Disponible,Usage,Statut"
 
-    while read line; do
-        [ -z "$line" ] && continue
-        local fs=$(echo "$line" | awk '{print $1}')
-        local fstype=$(echo "$line" | awk '{print $2}')
-        local size=$(echo "$line" | awk '{print $3}')
-        local used=$(echo "$line" | awk '{print $4}')
-        local avail=$(echo "$line" | awk '{print $5}')
-        local use_percent=$(echo "$line" | awk '{print $6}' | tr -d '%')
-        local mount=$(echo "$line" | awk '{print $7}')
+    # Une seule passe pour la console et le HTML; "mount" recoit le reste de
+    # la ligne (points de montage contenant des espaces)
+    local fs fstype size used avail use_percent mount
+    while read -r fs fstype size used avail use_percent mount; do
+        [ -z "$fs" ] && continue
+        use_percent=${use_percent%\%}
 
         # Tronquer le nom du filesystem si trop long
         if [ ${#fs} -gt 25 ]; then
@@ -1201,285 +1195,127 @@ collect_disk_info() {
         fi
 
         local alert_flag=""
-        if [ -n "$use_percent" ] && [ "$use_percent" -ge "$THRESH_DISK_CRIT" ] 2>/dev/null; then
+        local status_badge="<span class=\"badge badge-ok\">OK</span>"
+        if is_int "$use_percent" && [ "$use_percent" -ge "$THRESH_DISK_CRIT" ]; then
             alert_flag="${RED}CRIT${NC}"
+            status_badge="<span class=\"badge badge-critical\">CRITIQUE</span>"
             add_alert_critical "Disque $mount utilise a ${use_percent}% (seuil: ${THRESH_DISK_CRIT}%)"
-        elif [ -n "$use_percent" ] && [ "$use_percent" -ge "$THRESH_DISK_WARN" ] 2>/dev/null; then
+        elif is_int "$use_percent" && [ "$use_percent" -ge "$THRESH_DISK_WARN" ]; then
             alert_flag="${YELLOW}WARN${NC}"
+            status_badge="<span class=\"badge badge-warning\">WARNING</span>"
             add_alert_warning "Disque $mount utilise a ${use_percent}% (seuil: ${THRESH_DISK_WARN}%)"
         fi
 
-        if [ -n "$alert_flag" ]; then
-            printf "  %-25s %-8s %8s %8s %8s %5s%% %b\n" "$fs" "$fstype" "$size" "$used" "$avail" "$use_percent" "$alert_flag"
-        else
-            printf "  %-25s %-8s %8s %8s %8s %5s%%\n" "$fs" "$fstype" "$size" "$used" "$avail" "$use_percent"
-        fi
+        printf "  %-25s %-8s %8s %8s %8s %5s%% %b\n" "$fs" "$fstype" "$size" "$used" "$avail" "$use_percent" "$alert_flag"
+        html_table_row "${mount}|${fstype}|${size}|${used}|${avail}|${use_percent}%" "" "$status_badge"
     done <<< "$df_output"
+
+    html_table_end
+    html_section_end
 
     # Statistiques I/O temps reel (iostat-like)
     echo ""
     print_header "STATISTIQUES I/O DISQUES (temps reel - 5 sec)"
 
-    local iostat_output=""
+    # io_data est normalise quelle que soit la source:
+    #   device rMB/s wMB/s await(ms) %util
     local io_data=""
+    local remote_script=""
 
-    # Colonnes iostat (position variable selon la version de sysstat)
-    local col_rmb="" col_wmb="" col_await="" col_rawait="" col_wawait="" col_util=""
-
-    # Essayer iostat d'abord (sysstat)
     if remote_cmd_exists "iostat"; then
-        # Recuperer aussi la ligne d'en-tete pour detecter dynamiquement les
-        # colonnes: la disposition varie selon les versions de sysstat
-        # (await peut etre scinde en r_await/w_await sur les versions recentes)
-        iostat_output=$(ssh_exec "LC_ALL=C iostat -xdmy 5 1 2>/dev/null | grep -E '^(Device|sd|vd|nvme|xvd|dm-|mmcblk)' | head -21")
-        local iostat_header=$(echo "$iostat_output" | grep '^Device' | head -1)
-        iostat_output=$(echo "$iostat_output" | grep -v '^Device')
-
-        if [ -n "$iostat_header" ]; then
-            col_rmb=$(echo "$iostat_header" | awk '{for(i=1;i<=NF;i++) if($i=="rMB/s") print i}')
-            col_wmb=$(echo "$iostat_header" | awk '{for(i=1;i<=NF;i++) if($i=="wMB/s") print i}')
-            col_await=$(echo "$iostat_header" | awk '{for(i=1;i<=NF;i++) if($i=="await") print i}')
-            col_rawait=$(echo "$iostat_header" | awk '{for(i=1;i<=NF;i++) if($i=="r_await") print i}')
-            col_wawait=$(echo "$iostat_header" | awk '{for(i=1;i<=NF;i++) if($i=="w_await") print i}')
-            col_util=$(echo "$iostat_header" | awk '{for(i=1;i<=NF;i++) if($i=="%util") print i}')
-        fi
-        # Fallbacks (disposition sysstat ancienne, cf. en-tete absent)
-        [ -n "$col_rmb" ] || col_rmb=3
-        [ -n "$col_wmb" ] || col_wmb=4
-        if [ -z "$col_await" ] && [ -z "$col_rawait" ]; then
-            col_await=10
-        fi
+        # Colonnes reperees par leur nom dans l'en-tete (disposition variable
+        # selon la version de sysstat). Si await est scinde en r_await/w_await
+        # (sysstat >= 12), on le pondere par r/s et w/s: une moyenne simple
+        # diviserait par deux la latence d'un disque qui ne fait qu'ecrire.
+        read -r -d '' remote_script <<'EOS'
+out=$(LC_ALL=C iostat -xdmy 5 1 2>/dev/null)
+# sysstat < 10 (RHEL6) ne connait pas -y: deux rapports, on garde le second
+[ -n "$out" ] || out=$(LC_ALL=C iostat -xdm 5 2 2>/dev/null | awk '/^Device/ {n++} n == 2')
+echo "$out" | awk '
+    /^Device/ {
+        split("", col)
+        for (i = 1; i <= NF; i++) col[$i] = i
+        ok = ("rMB/s" in col) && ("wMB/s" in col) && ("%util" in col) && ("r/s" in col) && ("w/s" in col)
+        next
+    }
+    ok && $1 ~ /^(sd|vd|hd|xvd|nvme|dm-|mmcblk|md)[0-9a-z]/ {
+        rs = $col["r/s"]; ws = $col["w/s"]
+        if ("await" in col) {
+            aw = $col["await"]
+        } else if (("r_await" in col) && ("w_await" in col)) {
+            aw = (rs + ws > 0) ? (rs * $col["r_await"] + ws * $col["w_await"]) / (rs + ws) : 0
+        } else {
+            aw = 0
+        }
+        printf "%s %.2f %.2f %.1f %.1f\n", $1, $col["rMB/s"], $col["wMB/s"], aw, $col["%util"]
+    }' | head -20
+EOS
+        io_data=$(ssh_exec "$remote_script")
     fi
 
-    if [ -n "$iostat_output" ]; then
+    if [ -z "$io_data" ]; then
+        # Fallback: calcul depuis /proc/diskstats (mesure sur 5 secondes)
+        # Champs: $4 lectures, $6 secteurs lus, $7 ms lecture, $8 ecritures,
+        #         $10 secteurs ecrits, $11 ms ecriture, $13 ms occupe
+        # await = temps d'attente cumule / nombre de requetes (comme iostat)
+        print_info "Note" "iostat non disponible, calcul depuis /proc/diskstats"
+        read -r -d '' remote_script <<'EOS'
+s1=$(cat /proc/diskstats)
+sleep 5
+s2=$(cat /proc/diskstats)
+printf '%s\n--\n%s\n' "$s1" "$s2" | awk '
+    $1 == "--" { second = 1; next }
+    !second { r[$3] = $4; rs[$3] = $6; rt[$3] = $7; w[$3] = $8; ws[$3] = $10; wt[$3] = $11; io[$3] = $13; next }
+    ($3 in r) && $3 ~ /^(sd[a-z]+|vd[a-z]+|hd[a-z]+|xvd[a-z]+|nvme[0-9]+n[0-9]+|dm-[0-9]+|mmcblk[0-9]+|md[0-9]+)$/ {
+        ios = ($4 - r[$3]) + ($8 - w[$3])
+        ticks = ($7 - rt[$3]) + ($11 - wt[$3])
+        await = (ios > 0) ? ticks / ios : 0
+        util = ($13 - io[$3]) / 5000 * 100
+        if (util > 100) util = 100
+        printf "%s %.2f %.2f %.1f %.1f\n", $3, ($6 - rs[$3]) * 512 / 1048576 / 5, ($10 - ws[$3]) * 512 / 1048576 / 5, await, util
+    }'
+EOS
+        io_data=$(ssh_exec "$remote_script")
+    fi
+
+    html_section_start "Statistiques I/O Disques (temps reel - 5 sec)"
+    if [ -n "$io_data" ]; then
         printf "  %-12s %10s %10s %8s %8s %8s\n" "Device" "rMB/s" "wMB/s" "await" "%util" "Statut"
         printf "  %-12s %10s %10s %8s %8s %8s\n" "------------" "----------" "----------" "--------" "--------" "--------"
+        html_table_start "Device,rMB/s,wMB/s,await (ms),%util,Statut"
 
-        io_data="$iostat_output"
-        while read line; do
-            [ -z "$line" ] && continue
-            local dev=$(echo "$line" | awk '{print $1}')
-            local rmb=$(echo "$line" | awk -v c="$col_rmb" '{printf "%.2f", $c}')
-            local wmb=$(echo "$line" | awk -v c="$col_wmb" '{printf "%.2f", $c}')
-            local await=""
-            if [ -n "$col_await" ]; then
-                await=$(echo "$line" | awk -v c="$col_await" '{printf "%.1f", $c}')
-            else
-                # sysstat recent: moyenne de r_await et w_await
-                await=$(echo "$line" | awk -v r="$col_rawait" -v w="$col_wawait" '{printf "%.1f", ($r+$w)/2}')
-            fi
-            local util=""
-            if [ -n "$col_util" ]; then
-                util=$(echo "$line" | awk -v c="$col_util" '{printf "%.1f", $c}')
-            else
-                util=$(echo "$line" | awk '{printf "%.1f", $NF}')
-            fi
+        local dev rmb wmb await util
+        while read -r dev rmb wmb await util; do
+            [ -z "$dev" ] && continue
+            is_num "$util" || util=0
+            is_num "$await" || await=0
 
             local alert_flag=""
-            local util_int=$(echo "$util" | cut -d. -f1)
-            local await_int=$(echo "$await" | cut -d. -f1)
-
-            if [ -n "$util_int" ] && [ "$util_int" -ge 90 ] 2>/dev/null; then
+            local status_badge="<span class=\"badge badge-ok\">OK</span>"
+            if float_ge "$util" "$THRESH_DISKIO_UTIL_CRIT"; then
                 alert_flag="${RED}CRIT${NC}"
+                status_badge="<span class=\"badge badge-critical\">SATURATION</span>"
                 add_alert_critical "Disque $dev: utilisation a ${util}% (saturation)"
-            elif [ -n "$util_int" ] && [ "$util_int" -ge 70 ] 2>/dev/null; then
+            elif float_ge "$util" "$THRESH_DISKIO_UTIL_WARN"; then
                 alert_flag="${YELLOW}WARN${NC}"
+                status_badge="<span class=\"badge badge-warning\">CHARGE</span>"
                 add_alert_warning "Disque $dev: utilisation a ${util}%"
-            elif [ -n "$await_int" ] && [ "$await_int" -ge 50 ] 2>/dev/null; then
+            elif float_ge "$await" "$THRESH_DISKIO_AWAIT_WARN"; then
                 alert_flag="${YELLOW}WARN${NC}"
+                status_badge="<span class=\"badge badge-warning\">LATENCE</span>"
                 add_alert_warning "Disque $dev: latence elevee (await=${await}ms)"
             fi
 
-            if [ -n "$alert_flag" ]; then
-                printf "  %-12s %10s %10s %8s %8s %b\n" "$dev" "$rmb" "$wmb" "${await}ms" "${util}%" "$alert_flag"
-            else
-                printf "  %-12s %10s %10s %8s %8s\n" "$dev" "$rmb" "$wmb" "${await}ms" "${util}%"
-            fi
-        done <<< "$iostat_output"
-    else
-        # Fallback: calcul depuis /proc/diskstats (mesure sur 5 secondes)
-        print_info "Note" "iostat non disponible, calcul depuis /proc/diskstats"
-
-        io_data=$(ssh_exec '
-            # Fichiers temporaires uniques (evite collisions entre audits
-            # concurrents et attaques par symlink dans /tmp partage)
-            ds1=$(mktemp /tmp/diskstats1.XXXXXX) || exit 1
-            ds2=$(mktemp /tmp/diskstats2.XXXXXX) || exit 1
-            trap "rm -f $ds1 $ds2" EXIT
-            # Premiere mesure
-            cat /proc/diskstats > "$ds1"
-            sleep 5
-            # Seconde mesure
-            cat /proc/diskstats > "$ds2"
-
-            # Calcul des deltas
-            awk '\''
-            NR==FNR {
-                dev[$3]=$3; rd1[$3]=$6; wr1[$3]=$10; io1[$3]=$13; iot1[$3]=$10+$6
-                next
-            }
-            $3 in dev && $3 ~ /^(sd[a-z]|vd[a-z]|nvme[0-9]+n[0-9]+|xvd[a-z]|dm-[0-9]+|mmcblk[0-9]+p?[0-9]*)$/ {
-                rd_sec = ($6 - rd1[$3]) / 5
-                wr_sec = ($10 - wr1[$3]) / 5
-                rd_mb = rd_sec * 512 / 1048576
-                wr_mb = wr_sec * 512 / 1048576
-                io_ms = $13 - io1[$3]
-                total_io = ($6 - rd1[$3]) + ($10 - wr1[$3])
-                if (total_io > 0) {
-                    await = io_ms / total_io
-                } else {
-                    await = 0
-                }
-                util = (io_ms / 5000) * 100
-                if (util > 100) util = 100
-                printf "%s %.2f %.2f %.1f %.1f\n", $3, rd_mb, wr_mb, await, util
-            }
-            '\'' "$ds1" "$ds2"
-        ')
-
-        if [ -n "$io_data" ]; then
-            printf "  %-12s %10s %10s %8s %8s %8s\n" "Device" "rMB/s" "wMB/s" "await" "%util" "Statut"
-            printf "  %-12s %10s %10s %8s %8s %8s\n" "------------" "----------" "----------" "--------" "--------" "--------"
-
-            while read line; do
-                [ -z "$line" ] && continue
-                local dev=$(echo "$line" | awk '{print $1}')
-                local rmb=$(echo "$line" | awk '{print $2}')
-                local wmb=$(echo "$line" | awk '{print $3}')
-                local await=$(echo "$line" | awk '{print $4}')
-                local util=$(echo "$line" | awk '{print $5}')
-
-                local alert_flag=""
-                local util_int=$(echo "$util" | cut -d. -f1)
-                local await_int=$(echo "$await" | cut -d. -f1)
-
-                if [ -n "$util_int" ] && [ "$util_int" -ge 90 ] 2>/dev/null; then
-                    alert_flag="${RED}CRIT${NC}"
-                    add_alert_critical "Disque $dev: utilisation a ${util}% (saturation)"
-                elif [ -n "$util_int" ] && [ "$util_int" -ge 70 ] 2>/dev/null; then
-                    alert_flag="${YELLOW}WARN${NC}"
-                    add_alert_warning "Disque $dev: utilisation a ${util}%"
-                elif [ -n "$await_int" ] && [ "$await_int" -ge 50 ] 2>/dev/null; then
-                    alert_flag="${YELLOW}WARN${NC}"
-                    add_alert_warning "Disque $dev: latence elevee (await=${await}ms)"
-                fi
-
-                if [ -n "$alert_flag" ]; then
-                    printf "  %-12s %10s %10s %8s %8s %b\n" "$dev" "$rmb" "$wmb" "${await}ms" "${util}%" "$alert_flag"
-                else
-                    printf "  %-12s %10s %10s %8s %8s\n" "$dev" "$rmb" "$wmb" "${await}ms" "${util}%"
-                fi
-            done <<< "$io_data"
-        else
-            print_warning "Impossible de collecter les statistiques I/O"
-        fi
-    fi
-
-    # HTML output
-    if [ -n "$HTML_OUTPUT" ]; then
-        html_section_start "Disques et Systemes de Fichiers"
-        html_table_start "Filesystem,Type,Taille,Utilise,Disponible,Usage,Statut"
-
-        while IFS= read -r line; do
-            [ -z "$line" ] && continue
-            local fs=$(echo "$line" | awk '{print $1}')
-            local fstype=$(echo "$line" | awk '{print $2}')
-            local size=$(echo "$line" | awk '{print $3}')
-            local used=$(echo "$line" | awk '{print $4}')
-            local avail=$(echo "$line" | awk '{print $5}')
-            local use_percent=$(echo "$line" | awk '{print $6}' | tr -d '%')
-            local mount=$(echo "$line" | awk '{print $7}')
-
-            local status_badge=""
-            if [ -n "$use_percent" ] && [ "$use_percent" -ge "$THRESH_DISK_CRIT" ] 2>/dev/null; then
-                status_badge="<span class=\"badge badge-critical\">CRITIQUE</span>"
-            elif [ -n "$use_percent" ] && [ "$use_percent" -ge "$THRESH_DISK_WARN" ] 2>/dev/null; then
-                status_badge="<span class=\"badge badge-warning\">WARNING</span>"
-            else
-                status_badge="<span class=\"badge badge-ok\">OK</span>"
-            fi
-
-            html_table_row "${mount}|${fstype}|${size}|${used}|${avail}|${use_percent}%" "" "$status_badge"
-        done <<< "$df_output"
-
+            printf "  %-12s %10s %10s %8s %8s %b\n" "$dev" "$rmb" "$wmb" "${await}ms" "${util}%" "$alert_flag"
+            html_table_row "${dev}|${rmb}|${wmb}|${await}|${util}%" "" "$status_badge"
+        done <<< "$io_data"
         html_table_end
-        html_section_end
-
-        # I/O Stats section (temps reel)
-        html_section_start "Statistiques I/O Disques (temps reel - 5 sec)"
-        if [ -n "$io_data" ]; then
-            html_table_start "Device,rMB/s,wMB/s,await (ms),%util,Statut"
-
-            if [ -n "$iostat_output" ]; then
-                # Format iostat
-                while IFS= read -r line; do
-                    [ -z "$line" ] && continue
-                    local dev=$(echo "$line" | awk '{print $1}')
-                    local rmb=$(echo "$line" | awk -v c="$col_rmb" '{printf "%.2f", $c}')
-                    local wmb=$(echo "$line" | awk -v c="$col_wmb" '{printf "%.2f", $c}')
-                    local await=""
-                    if [ -n "$col_await" ]; then
-                        await=$(echo "$line" | awk -v c="$col_await" '{printf "%.1f", $c}')
-                    else
-                        await=$(echo "$line" | awk -v r="$col_rawait" -v w="$col_wawait" '{printf "%.1f", ($r+$w)/2}')
-                    fi
-                    local util=""
-                    if [ -n "$col_util" ]; then
-                        util=$(echo "$line" | awk -v c="$col_util" '{printf "%.1f", $c}')
-                    else
-                        util=$(echo "$line" | awk '{printf "%.1f", $NF}')
-                    fi
-
-                    local status_badge=""
-                    local util_int=$(echo "$util" | cut -d. -f1)
-                    local await_int=$(echo "$await" | cut -d. -f1)
-
-                    if [ -n "$util_int" ] && [ "$util_int" -ge 90 ] 2>/dev/null; then
-                        status_badge="<span class=\"badge badge-critical\">SATURATION</span>"
-                    elif [ -n "$util_int" ] && [ "$util_int" -ge 70 ] 2>/dev/null; then
-                        status_badge="<span class=\"badge badge-warning\">CHARGE</span>"
-                    elif [ -n "$await_int" ] && [ "$await_int" -ge 50 ] 2>/dev/null; then
-                        status_badge="<span class=\"badge badge-warning\">LATENCE</span>"
-                    else
-                        status_badge="<span class=\"badge badge-ok\">OK</span>"
-                    fi
-
-                    html_table_row "${dev}|${rmb}|${wmb}|${await}|${util}%" "" "$status_badge"
-                done <<< "$iostat_output"
-            else
-                # Format /proc/diskstats
-                while IFS= read -r line; do
-                    [ -z "$line" ] && continue
-                    local dev=$(echo "$line" | awk '{print $1}')
-                    local rmb=$(echo "$line" | awk '{print $2}')
-                    local wmb=$(echo "$line" | awk '{print $3}')
-                    local await=$(echo "$line" | awk '{print $4}')
-                    local util=$(echo "$line" | awk '{print $5}')
-
-                    local status_badge=""
-                    local util_int=$(echo "$util" | cut -d. -f1)
-                    local await_int=$(echo "$await" | cut -d. -f1)
-
-                    if [ -n "$util_int" ] && [ "$util_int" -ge 90 ] 2>/dev/null; then
-                        status_badge="<span class=\"badge badge-critical\">SATURATION</span>"
-                    elif [ -n "$util_int" ] && [ "$util_int" -ge 70 ] 2>/dev/null; then
-                        status_badge="<span class=\"badge badge-warning\">CHARGE</span>"
-                    elif [ -n "$await_int" ] && [ "$await_int" -ge 50 ] 2>/dev/null; then
-                        status_badge="<span class=\"badge badge-warning\">LATENCE</span>"
-                    else
-                        status_badge="<span class=\"badge badge-ok\">OK</span>"
-                    fi
-
-                    html_table_row "${dev}|${rmb}|${wmb}|${await}|${util}%" "" "$status_badge"
-                done <<< "$io_data"
-            fi
-            html_table_end
-        else
-            html_append "            <p>Aucune statistique I/O disponible</p>
+    else
+        print_warning "Impossible de collecter les statistiques I/O"
+        html_append "            <p>Aucune statistique I/O disponible</p>
 "
-        fi
-        html_section_end
     fi
+    html_section_end
 }
 
 collect_network_info() {
