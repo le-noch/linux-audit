@@ -41,6 +41,9 @@ THRESH_DISK_CRIT=90
 THRESH_DISKIO_UTIL_WARN=70
 THRESH_DISKIO_UTIL_CRIT=90
 THRESH_DISKIO_AWAIT_WARN=50
+# Pics I/O dans l'historique SAR (sar -d)
+THRESH_SAR_UTIL=80
+THRESH_SAR_AWAIT=30
 
 # Variables de travail
 REMOTE_HOST=""
@@ -68,9 +71,16 @@ DISTRO_NAME=""
 DISTRO_VERSION=""
 REMOTE_HOSTNAME=""
 SAR_IO_ANOMALIES=""
+SAR_IO_ANALYZED=0
 
 # Repertoire de travail local (marqueurs d'echec SSH, socket de multiplexage)
 WORK_DIR=""
+SSH_CONTROL=""
+
+# Commandes disponibles sur le serveur distant (inventaire unique)
+REMOTE_CMDS=""
+# Chemin des fichiers SAR (detecte une seule fois)
+SAR_PATH=""
 
 #-------------------------------------------------------------------------------
 # SECTION 2: FONCTIONS UTILITAIRES
@@ -192,9 +202,21 @@ is_num() {
 ssh_exec() {
     local cmd="$1"
 
+    # Le script est envoye sur stdin a "sh -s": le shell de login distant
+    # (bash, tcsh, fish...) n'a qu'a lancer sh, et les commandes s'executent
+    # toujours en shell POSIX. Le bloc { } </dev/null est lu en entier par sh
+    # avant execution: aucune commande ne peut consommer la suite du script.
+    # Prelude: locale C (un LC_* transmis par SendEnv casserait le parsing)
+    # et /sbin dans le PATH (absent du PATH non-root sur RHEL: ip, ifconfig).
     # "--" empeche un utilisateur ou un hote commencant par "-" d'etre
     # interprete comme une option ssh
-    run_ssh -- "${REMOTE_USER}@${REMOTE_HOST}" "$cmd" 2>/dev/null
+    run_ssh -- "${REMOTE_USER}@${REMOTE_HOST}" "sh -s" 2>/dev/null <<EOF
+{
+LC_ALL=C; LANG=C; export LC_ALL LANG
+PATH="\$PATH:/sbin:/usr/sbin:/usr/local/sbin"; export PATH
+$cmd
+} </dev/null
+EOF
     local rc=$?
     if [ "$rc" -eq 255 ] && [ -n "$WORK_DIR" ]; then
         : > "$WORK_DIR/ssh_failed"
@@ -213,15 +235,41 @@ check_ssh_alive() {
     fi
 }
 
-# Verification si une commande existe sur le serveur distant
-# Une coupure SSH n'est pas confondue avec une commande absente: le marqueur
-# pose par ssh_exec est verifie juste apres.
+# Inventaire unique des commandes utiles sur le serveur distant
+detect_remote_cmds() {
+    REMOTE_CMDS=$(ssh_exec "for c in lscpu iostat ip ifconfig sar vmstat getconf; do command -v \$c >/dev/null 2>&1 && echo \$c; done" | tr '\n' ' ')
+    check_ssh_alive "inventaire des commandes"
+}
+
+# Verification si une commande existe sur le serveur distant (d'apres
+# l'inventaire: une coupure SSH n'est pas confondue avec une commande absente)
 remote_cmd_exists() {
-    local cmd="$1"
-    local answer
-    answer=$(ssh_exec "command -v $cmd >/dev/null 2>&1 && echo 'yes' || echo 'no'")
-    check_ssh_alive "recherche de $cmd"
-    [ "$answer" = "yes" ]
+    case " $REMOTE_CMDS " in
+        *" $1 "*) return 0 ;;
+    esac
+    return 1
+}
+
+# Connexion SSH maitre: toutes les commandes suivantes reutilisent la meme
+# connexion (une seule authentification au lieu d'une quarantaine, moins de
+# bruit dans les journaux d'auth, pas de blocage MaxStartups/fail2ban).
+# En cas d'echec (socket trop long, multiplexage interdit), on continue sans.
+open_ssh_master() {
+    [ -n "$WORK_DIR" ] || return 1
+    SSH_CONTROL="$WORK_DIR/cm"
+    if run_ssh -o ControlMaster=yes -o ControlPath="$SSH_CONTROL" -o ControlPersist=no -fN \
+            -- "${REMOTE_USER}@${REMOTE_HOST}" >/dev/null 2>&1 && [ -S "$SSH_CONTROL" ]; then
+        SSH_ARGS=("${SSH_ARGS[@]}" -o ControlPath="$SSH_CONTROL" -o ControlMaster=no)
+        return 0
+    fi
+    SSH_CONTROL=""
+    return 1
+}
+
+close_ssh_master() {
+    if [ -n "$SSH_CONTROL" ] && [ -S "$SSH_CONTROL" ]; then
+        ssh -o ControlPath="$SSH_CONTROL" -O exit -- "${REMOTE_USER}@${REMOTE_HOST}" >/dev/null 2>&1
+    fi
 }
 
 # Test de connexion SSH
@@ -905,9 +953,8 @@ collect_cpu_info() {
         html_info_end
 
         # Ajouter le graphique historique CPU si SAR disponible
-        local sar_path_cpu=$(detect_sar_path 2>/dev/null)
-        if [ -n "$sar_path_cpu" ]; then
-            generate_cpu_sar_chart "$sar_path_cpu"
+        if [ -n "$SAR_PATH" ]; then
+            generate_cpu_sar_chart "$SAR_PATH"
         fi
 
         html_section_end
@@ -1333,244 +1380,127 @@ collect_network_info() {
         ip_output=$(ssh_exec "ifconfig 2>/dev/null | grep -E '^[a-z]|inet ' | grep -v '127.0.0.1'")
     fi
 
+    html_section_start "Reseau"
+
     if [ -n "$ip_output" ]; then
-        echo "$ip_output" | while read line; do
+        local line
+        while IFS= read -r line; do
             echo "  $line"
-        done
+        done <<< "$ip_output"
+        html_append "            <h3 style=\"color: #a0a0a0; font-size: 1em; margin-bottom: 10px;\">Adresses IP</h3>
+            <pre style=\"background: rgba(0,0,0,0.3); padding: 15px; border-radius: 6px; overflow-x: auto; color: #e8e8e8;\">$(html_escape "$ip_output")</pre>
+"
     else
         print_warning "Impossible de recuperer les informations reseau"
     fi
 
     # Statistiques interfaces
+    # "iface:" est remplace par "iface " avant le decoupage: sur les anciens
+    # noyaux le compteur RX est colle au nom ("eth0:123456789")
     echo ""
-    local netdev=$(ssh_exec "cat /proc/net/dev 2>/dev/null | tail -n +3 | grep -v lo:")
+    local netdev=$(ssh_exec "tail -n +3 /proc/net/dev 2>/dev/null | sed 's/:/ /' | awk '\$1 != \"lo\" {print \$1, \$2, \$10}'")
 
     if [ -n "$netdev" ]; then
-        # Recuperer les IPs par interface pour la console
-        local ip_list_console=$(ssh_exec "ip -4 addr show 2>/dev/null | grep -E 'inet ' | awk '{print \$NF, \$2}' | sed 's|/.*||'" 2>/dev/null)
+        # IPs par interface (une seule recuperation pour console et HTML)
+        local ip_list=""
+        if remote_cmd_exists "ip"; then
+            ip_list=$(ssh_exec "ip -4 addr show 2>/dev/null | awk '/inet / {sub(/\\/.*/, \"\", \$2); print \$NF, \$2}'")
+        fi
 
         printf "  %-12s %-18s %15s %15s\n" "Interface" "Adresse IP" "RX bytes" "TX bytes"
         printf "  %-12s %-18s %15s %15s\n" "------------" "------------------" "---------------" "---------------"
+        html_append "            <h3 style=\"color: #a0a0a0; font-size: 1em; margin: 15px 0 10px 0;\">Statistiques Interfaces</h3>
+"
+        html_table_start "Interface,Adresse IP,RX,TX"
 
-        echo "$netdev" | while read line; do
-            local iface=$(echo "$line" | awk -F: '{print $1}' | tr -d ' ')
-            local rx_bytes=$(echo "$line" | awk '{print $2}')
-            local tx_bytes=$(echo "$line" | awk '{print $10}')
+        local iface rx_bytes tx_bytes
+        while read -r iface rx_bytes tx_bytes; do
+            [ -z "$iface" ] && continue
 
-            # Trouver l'IP de cette interface
-            local iface_ip=$(echo "$ip_list_console" | grep "^${iface} " | awk '{print $2}' | head -1)
+            # Trouver l'IP de cette interface (comparaison exacte, sans regex)
+            local iface_ip=$(echo "$ip_list" | awk -v i="$iface" '$1 == i {print $2; exit}')
             [ -z "$iface_ip" ] && iface_ip="-"
 
             # Convertir en format lisible
-            local rx_human=$(echo "$rx_bytes" | awk '{
-                if ($1 >= 1073741824) printf "%.2f GB", $1/1073741824
-                else if ($1 >= 1048576) printf "%.2f MB", $1/1048576
-                else if ($1 >= 1024) printf "%.2f KB", $1/1024
-                else printf "%d B", $1
-            }')
-            local tx_human=$(echo "$tx_bytes" | awk '{
-                if ($1 >= 1073741824) printf "%.2f GB", $1/1073741824
-                else if ($1 >= 1048576) printf "%.2f MB", $1/1048576
-                else if ($1 >= 1024) printf "%.2f KB", $1/1024
-                else printf "%d B", $1
-            }')
+            local rx_human=$(human_bytes "$rx_bytes")
+            local tx_human=$(human_bytes "$tx_bytes")
 
             printf "  %-12s %-18s %15s %15s\n" "$iface" "$iface_ip" "$rx_human" "$tx_human"
-        done
+            html_table_row "${iface}|${iface_ip}|${rx_human}|${tx_human}"
+        done <<< "$netdev"
+        html_table_end
     fi
 
-    # HTML output
-    if [ -n "$HTML_OUTPUT" ]; then
-        html_section_start "Reseau"
+    html_section_end
+}
 
-        # IP Addresses
-        if [ -n "$ip_output" ]; then
-            html_append "            <h3 style=\"color: #a0a0a0; font-size: 1em; margin-bottom: 10px;\">Adresses IP</h3>
-            <pre style=\"background: rgba(0,0,0,0.3); padding: 15px; border-radius: 6px; overflow-x: auto; color: #e8e8e8;\">"
-            local ip_escaped=$(html_escape "$ip_output")
-            html_append "${ip_escaped}</pre>
+# Octets -> format lisible (B, KB, MB, GB)
+human_bytes() {
+    is_int "$1" || { echo "-"; return; }
+    awk -v b="$1" 'BEGIN {
+        if (b >= 1073741824) printf "%.2f GB", b / 1073741824
+        else if (b >= 1048576) printf "%.2f MB", b / 1048576
+        else if (b >= 1024) printf "%.2f KB", b / 1024
+        else printf "%d B", b
+    }'
+}
+
+# Affiche un tableau de processus (console + HTML) en une seule passe
+# $1: titre, $2: en-tetes HTML (virgules), $3: donnees "user pid v1 v2 cmd"
+# $4: largeur des colonnes valeurs en console, $5/$6: en-tetes console
+print_process_table() {
+    local title="$1" html_headers="$2" data="$3" width="$4" h1="$5" h2="$6"
+
+    echo ""
+    echo "  ${title}:"
+    printf "  %-8s %-8s %-${width}s %-${width}s %s\n" "USER" "PID" "$h1" "$h2" "COMMAND"
+    local dashes=$(printf "%${width}s" "" | tr ' ' '-')
+    printf "  %-8s %-8s %-${width}s %-${width}s %s\n" "--------" "--------" "$dashes" "$dashes" "---------------"
+
+    html_append "            <h3 style=\"color: #a0a0a0; font-size: 1em; margin: 15px 0 10px 0;\">$(html_escape "$title")</h3>
+            <div class=\"table-process\">
 "
-        fi
-
-        # Network Stats avec IP
-        if [ -n "$netdev" ]; then
-            # Recuperer les IPs par interface
-            local ip_list=$(ssh_exec "ip -4 addr show 2>/dev/null | grep -E 'inet ' | awk '{print \$NF, \$2}' | sed 's|/.*||'" 2>/dev/null)
-
-            html_append "            <h3 style=\"color: #a0a0a0; font-size: 1em; margin: 15px 0 10px 0;\">Statistiques Interfaces</h3>
+    html_table_start "$html_headers"
+    local user pid v1 v2 cmd
+    while read -r user pid v1 v2 cmd; do
+        [ -z "$user" ] && continue
+        printf "  %-8s %-8s %-${width}s %-${width}s %s\n" "$user" "$pid" "$v1" "$v2" "$(echo "$cmd" | cut -c1-30)"
+        html_table_row "${user}|${pid}|${v1}|${v2}|$(echo "$cmd" | cut -c1-40)"
+    done <<< "$data"
+    html_table_end
+    html_append "            </div>
 "
-            html_table_start "Interface,Adresse IP,RX,TX"
-            while IFS= read -r line; do
-                [ -z "$line" ] && continue
-                local iface=$(echo "$line" | awk -F: '{print $1}' | tr -d ' ')
-                local rx_bytes=$(echo "$line" | awk '{print $2}')
-                local tx_bytes=$(echo "$line" | awk '{print $10}')
-
-                # Trouver l'IP de cette interface
-                local iface_ip=$(echo "$ip_list" | grep "^${iface} " | awk '{print $2}' | head -1)
-                [ -z "$iface_ip" ] && iface_ip="-"
-
-                local rx_human=$(echo "$rx_bytes" | awk '{
-                    if ($1 >= 1073741824) printf "%.2f GB", $1/1073741824
-                    else if ($1 >= 1048576) printf "%.2f MB", $1/1048576
-                    else if ($1 >= 1024) printf "%.2f KB", $1/1024
-                    else printf "%d B", $1
-                }')
-                local tx_human=$(echo "$tx_bytes" | awk '{
-                    if ($1 >= 1073741824) printf "%.2f GB", $1/1073741824
-                    else if ($1 >= 1048576) printf "%.2f MB", $1/1048576
-                    else if ($1 >= 1024) printf "%.2f KB", $1/1024
-                    else printf "%d B", $1
-                }')
-
-                html_table_row "${iface}|${iface_ip}|${rx_human}|${tx_human}"
-            done <<< "$netdev"
-            html_table_end
-        fi
-
-        html_section_end
-    fi
 }
 
 collect_process_info() {
     print_header "TOP PROCESSUS"
+    html_section_start "Top Processus"
 
-    echo ""
-    echo "  Top 5 processus par CPU:"
-    printf "  %-8s %-8s %-8s %-8s %s\n" "USER" "PID" "%CPU" "%MEM" "COMMAND"
-    printf "  %-8s %-8s %-8s %-8s %s\n" "--------" "--------" "--------" "--------" "---------------"
+    # Colonnes: user pid %cpu %mem commande (premier mot de la commande)
+    local top_cpu=$(ssh_exec "ps aux --sort=-%cpu 2>/dev/null | awk 'NR > 1 && NR <= 6 {print \$1, \$2, \$3, \$4, \$11}'")
+    print_process_table "Top 5 processus par CPU" "User,PID,%CPU,%MEM,Commande" "$top_cpu" 8 "%CPU" "%MEM"
 
-    local top_cpu=$(ssh_exec "ps aux --sort=-%cpu 2>/dev/null | head -6 | tail -5")
-    if [ -n "$top_cpu" ]; then
-        echo "$top_cpu" | while read line; do
-            local user=$(echo "$line" | awk '{print $1}')
-            local pid=$(echo "$line" | awk '{print $2}')
-            local cpu=$(echo "$line" | awk '{print $3}')
-            local mem=$(echo "$line" | awk '{print $4}')
-            local cmd=$(echo "$line" | awk '{print $11}' | cut -c1-30)
-            printf "  %-8s %-8s %-8s %-8s %s\n" "$user" "$pid" "$cpu" "$mem" "$cmd"
-        done
-    fi
+    local top_mem=$(ssh_exec "ps aux --sort=-%mem 2>/dev/null | awk 'NR > 1 && NR <= 6 {print \$1, \$2, \$3, \$4, \$11}'")
+    print_process_table "Top 5 processus par Memoire" "User,PID,%CPU,%MEM,Commande" "$top_mem" 8 "%CPU" "%MEM"
 
-    echo ""
-    echo "  Top 5 processus par Memoire:"
-    printf "  %-8s %-8s %-8s %-8s %s\n" "USER" "PID" "%CPU" "%MEM" "COMMAND"
-    printf "  %-8s %-8s %-8s %-8s %s\n" "--------" "--------" "--------" "--------" "---------------"
+    # Compteurs /proc/[pid]/io cumules depuis le demarrage de chaque processus
+    # (pas un debit instantane). Lisibles uniquement pour ses propres
+    # processus quand on n'est pas root.
+    local top_io=$(ssh_exec "for p in /proc/[0-9]*; do pid=\${p##*/}; [ -r \$p/io ] || continue; rb=\$(awk '/^read_bytes:/{print \$2}' \$p/io 2>/dev/null); wb=\$(awk '/^write_bytes:/{print \$2}' \$p/io 2>/dev/null); [ -n \"\$rb\" ] && [ -n \"\$wb\" ] || continue; t=\$((\$rb+\$wb)); [ \$t -gt 0 ] || continue; u=\$(stat -c '%U' \$p 2>/dev/null); u=\${u:-?}; c=\$(cat \$p/comm 2>/dev/null); c=\${c:-?}; printf '%d %s %s %d %d %s\n' \$t \"\$u\" \$pid \$((\$rb/1024)) \$((\$wb/1024)) \"\$c\"; done 2>/dev/null | sort -rn | head -5 | awk '{print \$2,\$3,\$4,\$5,\$6}'")
+    print_process_table "Top 5 processus par I/O Disque (cumul depuis leur demarrage)" "User,PID,READ (Ko),WRITE (Ko),Commande" "$top_io" 12 "READ(Ko)" "WRITE(Ko)"
 
-    local top_mem=$(ssh_exec "ps aux --sort=-%mem 2>/dev/null | head -6 | tail -5")
-    if [ -n "$top_mem" ]; then
-        echo "$top_mem" | while read line; do
-            local user=$(echo "$line" | awk '{print $1}')
-            local pid=$(echo "$line" | awk '{print $2}')
-            local cpu=$(echo "$line" | awk '{print $3}')
-            local mem=$(echo "$line" | awk '{print $4}')
-            local cmd=$(echo "$line" | awk '{print $11}' | cut -c1-30)
-            printf "  %-8s %-8s %-8s %-8s %s\n" "$user" "$pid" "$cpu" "$mem" "$cmd"
-        done
-    fi
-
-    echo ""
-    echo "  Top 5 processus par I/O Disque:"
-    printf "  %-8s %-8s %-12s %-12s %s\n" "USER" "PID" "READ(Ko)" "WRITE(Ko)" "COMMAND"
-    printf "  %-8s %-8s %-12s %-12s %s\n" "--------" "--------" "------------" "------------" "---------------"
-
-    local top_io=$(ssh_exec "for p in \$(ls -d /proc/[0-9]* 2>/dev/null); do pid=\${p##*/}; [ -r \$p/io ] || continue; rb=\$(awk '/^read_bytes:/{print \$2}' \$p/io 2>/dev/null); wb=\$(awk '/^write_bytes:/{print \$2}' \$p/io 2>/dev/null); [ -n \"\$rb\" ] && [ -n \"\$wb\" ] || continue; t=\$((\$rb+\$wb)); [ \$t -gt 0 ] || continue; u=\$(stat -c '%U' \$p 2>/dev/null); u=\${u:-?}; c=\$(cat \$p/comm 2>/dev/null); c=\${c:-?}; printf '%d %s %s %d %d %s\n' \$t \"\$u\" \$pid \$((\$rb/1024)) \$((\$wb/1024)) \"\$c\"; done 2>/dev/null | sort -rn | head -5 | awk '{print \$2,\$3,\$4,\$5,\$6}'")
-    if [ -n "$top_io" ]; then
-        echo "$top_io" | while read line; do
-            local user=$(echo "$line" | awk '{print $1}')
-            local pid=$(echo "$line" | awk '{print $2}')
-            local read_kb=$(echo "$line" | awk '{print $3}')
-            local write_kb=$(echo "$line" | awk '{print $4}')
-            local cmd=$(echo "$line" | awk '{print $5}' | cut -c1-30)
-            printf "  %-8s %-8s %-12s %-12s %s\n" "$user" "$pid" "$read_kb" "$write_kb" "$cmd"
-        done
-    fi
-
-    # HTML output
-    if [ -n "$HTML_OUTPUT" ]; then
-        html_section_start "Top Processus"
-
-        # Top CPU
-        html_append "            <h3 style=\"color: #a0a0a0; font-size: 1em; margin-bottom: 10px;\">Top 5 par CPU</h3>
-            <div class=\"table-process\">
-"
-        html_table_start "User,PID,%CPU,%MEM,Commande"
-        if [ -n "$top_cpu" ]; then
-            while IFS= read -r line; do
-                [ -z "$line" ] && continue
-                local user=$(echo "$line" | awk '{print $1}')
-                local pid=$(echo "$line" | awk '{print $2}')
-                local cpu=$(echo "$line" | awk '{print $3}')
-                local mem=$(echo "$line" | awk '{print $4}')
-                local cmd=$(echo "$line" | awk '{print $11}' | cut -c1-40)
-                html_table_row "${user}|${pid}|${cpu}|${mem}|${cmd}"
-            done <<< "$top_cpu"
-        fi
-        html_table_end
-        html_append "            </div>
-"
-
-        # Top Memory
-        html_append "            <h3 style=\"color: #a0a0a0; font-size: 1em; margin: 15px 0 10px 0;\">Top 5 par Memoire</h3>
-            <div class=\"table-process\">
-"
-        html_table_start "User,PID,%CPU,%MEM,Commande"
-        if [ -n "$top_mem" ]; then
-            while IFS= read -r line; do
-                [ -z "$line" ] && continue
-                local user=$(echo "$line" | awk '{print $1}')
-                local pid=$(echo "$line" | awk '{print $2}')
-                local cpu=$(echo "$line" | awk '{print $3}')
-                local mem=$(echo "$line" | awk '{print $4}')
-                local cmd=$(echo "$line" | awk '{print $11}' | cut -c1-40)
-                html_table_row "${user}|${pid}|${cpu}|${mem}|${cmd}"
-            done <<< "$top_mem"
-        fi
-        html_table_end
-        html_append "            </div>
-"
-
-        # Top I/O Disque
-        html_append "            <h3 style=\"color: #a0a0a0; font-size: 1em; margin: 15px 0 10px 0;\">Top 5 par I/O Disque</h3>
-            <div class=\"table-process\">
-"
-        html_table_start "User,PID,READ (Ko),WRITE (Ko),Commande"
-        if [ -n "$top_io" ]; then
-            while IFS= read -r line; do
-                [ -z "$line" ] && continue
-                local user=$(echo "$line" | awk '{print $1}')
-                local pid=$(echo "$line" | awk '{print $2}')
-                local read_kb=$(echo "$line" | awk '{print $3}')
-                local write_kb=$(echo "$line" | awk '{print $4}')
-                local cmd=$(echo "$line" | awk '{print $5}' | cut -c1-40)
-                html_table_row "${user}|${pid}|${read_kb}|${write_kb}|${cmd}"
-            done <<< "$top_io"
-        fi
-        html_table_end
-        html_append "            </div>
-"
-
-        html_section_end
-    fi
+    html_section_end
 }
 
 #-------------------------------------------------------------------------------
 # SECTION 4: COLLECTE SAR (SYSSTAT)
 #-------------------------------------------------------------------------------
 
+# Detecte le repertoire des fichiers SAR et le stocke dans SAR_PATH
+# (appele une seule fois, hors substitution de commande)
 detect_sar_path() {
-    local sar_paths="/var/log/sa /var/log/sysstat"
-
-    for path in $sar_paths; do
-        # Verifier le format ancien (sa01, sa02...) et nouveau (sa20260125)
-        local check=$(ssh_exec "[ -d '$path' ] && (ls $path/sa[0-9][0-9] $path/sa[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9] 2>/dev/null | head -1)")
-        if [ -n "$check" ]; then
-            echo "$path"
-            return 0
-        fi
-    done
-
-    return 1
+    SAR_PATH=$(ssh_exec "for d in /var/log/sa /var/log/sysstat; do for f in \$d/sa[0-9][0-9] \$d/sa[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]; do [ -f \"\$f\" ] && { echo \$d; exit 0; }; done; done")
+    [ -n "$SAR_PATH" ]
 }
 
 # Analyse historique des I/O disques depuis SAR
@@ -1587,74 +1517,76 @@ analyze_sar_io_history() {
 
     echo "  Analyse des pics I/O sur l'historique SAR..."
 
-    # Analyser les donnees sar -d pour tous les fichiers disponibles
-    # Chercher les pics: %util > 80% ou await > 30ms
-    # Support format ancien (sa01) et nouveau (sa20260125)
-    # Detection dynamique des colonnes pour compatibilite toutes versions sysstat
-    io_anomalies=$(ssh_exec "
-        for sarfile in \$(ls -rt ${sar_path}/sa[0-9][0-9] ${sar_path}/sa[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9] 2>/dev/null); do
-            # Extraire la date du fichier (format US avec LC_ALL=C: MM/DD/YY)
-            rawdate=\$(LC_ALL=C sar -d -f \$sarfile 2>/dev/null | head -1 | awk '{print \$4}')
-            # Convertir MM/DD/YY en DD/MM/YYYY (format FR)
-            filedate=\$(echo \"\$rawdate\" | awk -F'/' '{
-                year=\$3
-                if (length(year)==2) year=\"20\"year
-                print \$2\"/\"\$1\"/\"year
-            }')
+    # Une seule passe awk par fichier (et un seul sar -d): l'ancienne boucle
+    # shell lancait une dizaine de processus par ligne sur le serveur audite.
+    # - colonnes reperees par nom sur la ligne d'en-tete (horodatee et dont
+    #   un champ vaut exactement "DEV"), jamais sur la banniere
+    # - sar -p: noms de devices lisibles (sda, dm-0, vg-lv) au lieu de dev8-0
+    # - sortie: TYPE|cle de tri YYYYMMDD|date DD/MM/YYYY|heure|dev|%util|await|valeur
+    # - LINES|n: nombre de mesures analysees (distingue "pas de donnees")
+    local remote_script
+    read -r -d '' remote_script <<'EOS'
+for f in $(ls -rt $SAR_DIR/sa[0-9][0-9] $SAR_DIR/sa[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9] 2>/dev/null); do
+    LC_ALL=C sar -d -p -f "$f" 2>/dev/null | awk -v ut="$UT" -v aw="$AW" '
+        NR == 1 {
+            # Banniere: "Linux <kernel> (<host>) MM/DD/YY ..."
+            for (i = 1; i <= NF; i++) if ($i ~ /^[0-9][0-9]\/[0-9][0-9]\/[0-9][0-9]([0-9][0-9])?$/) {
+                split($i, d, "/"); y = d[3]; if (length(y) == 2) y = "20" y
+                date = d[2] "/" d[1] "/" y; key = y d[1] d[2]
+            }
+            next
+        }
+        $1 !~ /^[0-9][0-9]:[0-9][0-9]:[0-9][0-9]$/ { next }
+        {
+            o = ($2 == "AM" || $2 == "PM") ? 1 : 0
+            # En-tete: un champ vaut exactement "DEV" (sa position varie:
+            # 2e colonne, ou derniere avec -p sur sysstat >= 12)
+            hdr = 0; for (i = 1; i <= NF; i++) if ($i == "DEV") hdr = 1
+        }
+        hdr { split("", col); for (i = 1; i <= NF; i++) col[$i] = i; next }
+        !("DEV" in col) || !("%util" in col) { next }
+        {
+            u = $col["%util"]; a = ("await" in col) ? $col["await"] : 0
+            if (u !~ /^[0-9.]+$/ || a !~ /^[0-9.]+$/) next
+            lines++
+            t = o ? $1 " " $2 : $1
+            if (u + 0 >= ut) print "UTIL|" key "|" date "|" t "|" $col["DEV"] "|%util=" u "%|await=" a "ms|" u
+            else if (a + 0 >= aw) print "AWAIT|" key "|" date "|" t "|" $col["DEV"] "|%util=" u "%|await=" a "ms|" a
+        }
+        END { print "LINES|" lines + 0 }'
+done
+EOS
+    io_anomalies=$(ssh_exec "SAR_DIR='$sar_path'; UT='$THRESH_SAR_UTIL'; AW='$THRESH_SAR_AWAIT'
+$remote_script")
 
-            # Detecter dynamiquement les indices de colonnes depuis l'en-tete SAR
-            header=\$(LC_ALL=C sar -d -f \$sarfile 2>/dev/null | grep -E 'DEV|await|%util' | head -1)
-            dev_col=\$(echo \"\$header\" | awk '{for(i=1;i<=NF;i++) if(\$i==\"DEV\") print i}')
-            await_col=\$(echo \"\$header\" | awk '{for(i=1;i<=NF;i++) if(\$i==\"await\") print i}')
-            util_col=\$(echo \"\$header\" | awk '{for(i=1;i<=NF;i++) if(\$i==\"%util\") print i}')
+    local analyzed=$(echo "$io_anomalies" | awk -F'|' '$1 == "LINES" {n += $2} END {print n + 0}')
 
-            # Fallback si colonnes non detectees (anciennes versions)
-            [ -z \"\$dev_col\" ] && dev_col=2
-            [ -z \"\$await_col\" ] && await_col=8
-            [ -z \"\$util_col\" ] && util_col=10
+    # Top 10 par type (tri numerique en locale C: decimales a point), puis
+    # tri chronologique inverse sur la cle YYYYMMDD + heure
+    local util_anomalies=$(echo "$io_anomalies" | grep '^UTIL|' | LC_ALL=C sort -t'|' -k8,8 -rn | head -10)
+    local await_anomalies=$(echo "$io_anomalies" | grep '^AWAIT|' | LC_ALL=C sort -t'|' -k8,8 -rn | head -10)
+    io_anomalies=$(printf '%s\n%s\n' "$util_anomalies" "$await_anomalies" | grep -v '^$' | LC_ALL=C sort -t'|' -k2,2r -k4,4r | cut -d'|' -f1,3-7)
 
-            # Analyser chaque ligne de donnees disk avec les colonnes detectees
-            LC_ALL=C sar -d -f \$sarfile 2>/dev/null | grep -E '^[0-9]{2}:[0-9]{2}:[0-9]{2}' | grep -v 'DEV' | while read line; do
-                time=\$(echo \"\$line\" | awk '{print \$1}')
-                dev=\$(echo \"\$line\" | awk -v col=\$dev_col '{print \$col}')
-                await=\$(echo \"\$line\" | awk -v col=\$await_col '{print \$col}')
-                util=\$(echo \"\$line\" | awk -v col=\$util_col '{print \$col}')
+    SAR_IO_ANALYZED=$analyzed
 
-                # Verifier les seuils (util > 80% ou await > 30ms)
-                util_int=\$(echo \"\$util\" | cut -d. -f1)
-                await_int=\$(echo \"\$await\" | cut -d. -f1)
-
-                if [ -n \"\$util_int\" ] && [ \"\$util_int\" -ge 80 ] 2>/dev/null; then
-                    echo \"UTIL|\$filedate|\$time|\$dev|%util=\${util}%|await=\${await}ms|\${util}\"
-                elif [ -n \"\$await_int\" ] && [ \"\$await_int\" -ge 30 ] 2>/dev/null; then
-                    echo \"AWAIT|\$filedate|\$time|\$dev|%util=\${util}%|await=\${await}ms|\${await}\"
-                fi
-            done
-        done
-    ")
-
-    # Trier separement les anomalies UTIL et AWAIT pour ne pas perdre les pics await
-    local util_anomalies=$(echo "$io_anomalies" | grep '^UTIL|' | sort -t'|' -k7 -rn | head -10)
-    local await_anomalies=$(echo "$io_anomalies" | grep '^AWAIT|' | sort -t'|' -k7 -rn | head -10)
-
-    # Combiner et retirer la colonne de tri (champ 7)
-    io_anomalies=$(printf '%s\n%s' "$util_anomalies" "$await_anomalies" | grep -v '^$' | cut -d'|' -f1-6 | sort -t'|' -k2,3 -r)
-
-    if [ -n "$io_anomalies" ]; then
-        local count=$(echo "$io_anomalies" | wc -l)
-        print_warning "Detecte $count pic(s) I/O anormaux dans l'historique SAR"
+    if [ "$analyzed" -eq 0 ]; then
+        print_warning "Aucune mesure disque (sar -d) dans l'historique SAR - analyse impossible"
+    elif [ -n "$io_anomalies" ]; then
+        local count=$(echo "$io_anomalies" | wc -l | tr -d ' ')
+        print_warning "Detecte $count pic(s) I/O anormaux dans l'historique SAR ($analyzed mesures analysees)"
         echo ""
         printf "  %-12s %-10s %-10s %-12s %-12s\n" "Date" "Heure" "Device" "%util" "await"
         printf "  %-12s %-10s %-10s %-12s %-12s\n" "------------" "----------" "----------" "------------" "------------"
 
-        echo "$io_anomalies" | while IFS='|' read type date time dev util await; do
+        local type date time dev util await
+        while IFS='|' read -r type date time dev util await; do
             printf "  %-12s %-10s %-10s %-12s %-12s\n" "$date" "$time" "$dev" "$util" "$await"
-        done
+        done <<< "$io_anomalies"
 
         # Ajouter une alerte globale
         add_alert_warning "Pics I/O historiques detectes (${count} occurrences) - voir section Analyse SAR"
     else
-        print_success "Aucun pic I/O anormal detecte dans l'historique SAR"
+        print_success "Aucun pic I/O anormal detecte dans l'historique SAR ($analyzed mesures analysees)"
     fi
 
     # Stocker pour HTML
@@ -1676,8 +1608,8 @@ collect_sar_data() {
     if ! remote_cmd_exists "sar"; then
         print_warning "sysstat n'est pas installe sur ce serveur - donnees SAR non disponibles"
     else
-        # Detecter le chemin des fichiers SAR
-        sar_path=$(detect_sar_path)
+        # Chemin des fichiers SAR (detecte une fois dans main)
+        sar_path="$SAR_PATH"
 
         if [ -z "$sar_path" ]; then
             print_warning "Aucun fichier SAR trouve dans /var/log/sa ou /var/log/sysstat"
@@ -1742,12 +1674,10 @@ collect_sar_data() {
                 fi
             done <<< "$SAR_IO_ANOMALIES"
             html_table_end
+        elif [ "$sar_available" -eq 1 ] && [ "$SAR_IO_ANALYZED" -eq 0 ]; then
+            html_alert "warning" "Aucune mesure disque (sar -d) dans l'historique SAR - analyse impossible"
         elif [ "$sar_available" -eq 1 ]; then
-            html_append "            <div class=\"alert alert-ok\" style=\"margin-top: 15px;\">
-                <span class=\"alert-icon\">&#10004;</span>
-                <span>Aucun pic I/O anormal detecte dans l'historique SAR</span>
-            </div>
-"
+            html_alert "ok" "Aucun pic I/O anormal detecte dans l'historique SAR (${SAR_IO_ANALYZED} mesures analysees)"
         fi
 
         html_section_end
@@ -1898,6 +1828,7 @@ parse_arguments() {
 }
 
 cleanup() {
+    close_ssh_master
     if [ -n "$WORK_DIR" ] && [ -d "$WORK_DIR" ]; then
         rm -rf "$WORK_DIR"
     fi
@@ -1935,13 +1866,23 @@ main() {
     echo ""
     echo "Connexion SSH vers ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PORT}..."
 
+    open_ssh_master
     if ! test_ssh_connection; then
         print_error "Impossible de se connecter au serveur $REMOTE_HOST"
         print_error "Verifiez: hostname, utilisateur, port, cle SSH, et que le serveur est accessible"
         exit 1
     fi
 
-    print_success "Connexion SSH etablie"
+    if [ -n "$SSH_CONTROL" ]; then
+        print_success "Connexion SSH etablie (multiplexee)"
+    else
+        print_success "Connexion SSH etablie"
+    fi
+
+    detect_remote_cmds
+    if remote_cmd_exists "sar"; then
+        detect_sar_path
+    fi
 
     # Recuperer le hostname pour le nom du fichier HTML
     # Assainir: le hostname vient du serveur distant, ne garder que des
