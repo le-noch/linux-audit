@@ -107,7 +107,11 @@ usage() {
     echo "  SSHPASS='secret' $0 -u admin -P serveur.example.com  # Non interactif"
     echo ""
     echo "Un rapport HTML est automatiquement genere: YYYYMMDD-Hostname-audit.html"
-    exit 1
+    echo ""
+    echo "Codes de sortie (convention Nagios):"
+    echo "  0 aucune alerte, 1 alerte(s) WARNING, 2 alerte(s) CRITIQUE,"
+    echo "  3 erreur (arguments, connexion SSH, ecriture du rapport)"
+    exit "${1:-3}"
 }
 
 print_line() {
@@ -634,8 +638,12 @@ html_finish() {
 
 write_html_report() {
     if [ -n "$HTML_OUTPUT" ]; then
-        echo "$HTML_CONTENT" > "$HTML_OUTPUT"
-        print_success "Rapport HTML genere: $HTML_OUTPUT"
+        if printf '%s\n' "$HTML_CONTENT" > "$HTML_OUTPUT" 2>/dev/null && [ -s "$HTML_OUTPUT" ]; then
+            print_success "Rapport HTML genere: $HTML_OUTPUT"
+        else
+            print_error "Impossible d'ecrire le rapport HTML: $HTML_OUTPUT"
+            return 1
+        fi
     fi
 }
 
@@ -1655,7 +1663,9 @@ collect_sar_data() {
             # LC_ALL=C garantit un format US (dates MM/DD/YY, decimales avec point)
             ssh_exec "for i in \$(ls -rt ${sar_path}/sa[0-9][0-9] ${sar_path}/sa[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9] 2>/dev/null); do LC_ALL=C sar -A -f \$i 2>/dev/null; done | gzip -c" > "$output_file"
 
-            if [ -s "$output_file" ]; then
+            # gzip d'une entree vide produit quand meme ~20 octets: verifier
+            # l'integrite de l'archive et qu'elle contient des donnees
+            if gzip -t "$output_file" 2>/dev/null && [ "$(gzip -dc "$output_file" 2>/dev/null | head -c 1 | wc -c)" -gt 0 ]; then
                 file_size=$(ls -lh "$output_file" | awk '{print $5}')
                 print_success "Donnees SAR exportees: $output_file (${file_size})"
             else
@@ -1823,7 +1833,7 @@ parse_arguments() {
                 fi
                 ;;
             -h|--help)
-                usage
+                usage 0
                 ;;
             -*)
                 print_error "Option inconnue: $1"
@@ -1851,7 +1861,7 @@ parse_arguments() {
     fi
     if [ -n "$SSH_KEY" ] && [ ! -r "$SSH_KEY" ]; then
         print_error "Cle SSH illisible: $SSH_KEY"
-        exit 1
+        exit 3
     fi
 
     detect_hostkey_policy
@@ -1886,7 +1896,7 @@ main() {
             echo "  - Debian/Ubuntu: sudo apt-get install sshpass"
             echo "  - RHEL/CentOS:   sudo yum install sshpass"
             echo "  - macOS:         brew install hudochenkov/sshpass/sshpass"
-            exit 1
+            exit 3
         fi
     fi
 
@@ -1905,7 +1915,7 @@ main() {
     if ! test_ssh_connection; then
         print_error "Impossible de se connecter au serveur $REMOTE_HOST"
         print_error "Verifiez: hostname, utilisateur, port, cle SSH, et que le serveur est accessible"
-        exit 1
+        exit 3
     fi
 
     if [ -n "$SSH_CONTROL" ]; then
@@ -1949,7 +1959,10 @@ main() {
 
     # Finaliser et ecrire le rapport HTML
     html_finish
-    write_html_report
+    local exit_code=0
+    [ -n "$ALERTS_WARNING" ] && exit_code=1
+    [ -n "$ALERTS_CRITICAL" ] && exit_code=2
+    write_html_report || exit_code=3
 
     # Pied de page
     echo ""
@@ -1957,7 +1970,10 @@ main() {
     printf "${BOLD}                         FIN DU RAPPORT${NC}\n"
     print_line
     echo ""
+
+    return $exit_code
 }
 
 # Point d'entree
 main "$@"
+exit $?
