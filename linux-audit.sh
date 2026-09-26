@@ -63,6 +63,9 @@ DISTRO_VERSION=""
 REMOTE_HOSTNAME=""
 SAR_IO_ANOMALIES=""
 
+# Repertoire de travail local (marqueurs d'echec SSH, socket de multiplexage)
+WORK_DIR=""
+
 #-------------------------------------------------------------------------------
 # SECTION 2: FONCTIONS UTILITAIRES
 #-------------------------------------------------------------------------------
@@ -139,7 +142,24 @@ add_alert_warning() {
     fi
 }
 
+# Tests numeriques (les valeurs distantes ne sont jamais considerees comme sures)
+is_int() {
+    case "$1" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    return 0
+}
+
+is_num() {
+    # Nombre decimal positif (ex: 12, 3.5, 0.25)
+    echo "$1" | grep -qE '^[0-9]+(\.[0-9]+)?$'
+}
+
 # Execution de commande SSH
+# Un code retour 255 signifie une erreur de transport SSH (connexion perdue,
+# authentification refusee...): on pose un marqueur dans WORK_DIR, car ssh_exec
+# s'execute le plus souvent dans une substitution $(...) ou une variable globale
+# serait perdue. check_ssh_alive() interrompt ensuite l'audit.
 ssh_exec() {
     local cmd="$1"
     local opts="$SSH_OPTS"
@@ -157,12 +177,33 @@ ssh_exec() {
     else
         ssh $opts -p "$REMOTE_PORT" "${REMOTE_USER}@${REMOTE_HOST}" "$cmd" 2>/dev/null
     fi
+    local rc=$?
+    if [ "$rc" -eq 255 ] && [ -n "$WORK_DIR" ]; then
+        : > "$WORK_DIR/ssh_failed"
+    fi
+    return $rc
+}
+
+# Interrompt l'audit si une commande SSH a echoue au niveau transport:
+# mieux vaut aucun rapport qu'un rapport rempli de valeurs vides.
+check_ssh_alive() {
+    if [ -n "$WORK_DIR" ] && [ -f "$WORK_DIR/ssh_failed" ]; then
+        echo ""
+        print_error "Connexion SSH perdue pendant la collecte ($1) - audit interrompu"
+        print_error "Aucun rapport genere: les donnees collectees seraient incompletes"
+        exit 3
+    fi
 }
 
 # Verification si une commande existe sur le serveur distant
+# Une coupure SSH n'est pas confondue avec une commande absente: le marqueur
+# pose par ssh_exec est verifie juste apres.
 remote_cmd_exists() {
     local cmd="$1"
-    ssh_exec "command -v $cmd >/dev/null 2>&1 && echo 'yes' || echo 'no'" | grep -q "yes"
+    local answer
+    answer=$(ssh_exec "command -v $cmd >/dev/null 2>&1 && echo 'yes' || echo 'no'")
+    check_ssh_alive "recherche de $cmd"
+    [ "$answer" = "yes" ]
 }
 
 # Test de connexion SSH
@@ -800,7 +841,9 @@ collect_cpu_info() {
         fi
     ")
 
-    local cpu_usage_display="${cpu_usage:-0}%"
+    is_int "$cpu_usage" || cpu_usage=""
+    local cpu_usage_display="${cpu_usage:-N/A}%"
+    [ -z "$cpu_usage" ] && cpu_usage_display="N/A"
     local cpu_status="ok"
     local cpu_badge=""
 
@@ -890,6 +933,20 @@ collect_memory_info() {
     local mem_available_kb=$(echo "$meminfo" | grep "^MemAvailable:" | awk '{print $2}')
     local mem_buffers_kb=$(echo "$meminfo" | grep "^Buffers:" | awk '{print $2}')
     local mem_cached_kb=$(echo "$meminfo" | grep "^Cached:" | awk '{print $2}')
+
+    if ! is_int "$mem_total_kb" || [ "$mem_total_kb" -lt 1024 ]; then
+        print_warning "Impossible de lire /proc/meminfo - section memoire ignoree"
+        if [ -n "$HTML_OUTPUT" ]; then
+            html_section_start "Memoire"
+            html_alert "warning" "Impossible de lire /proc/meminfo"
+            html_section_end
+        fi
+        return
+    fi
+    is_int "$mem_free_kb" || mem_free_kb=0
+    is_int "$mem_buffers_kb" || mem_buffers_kb=0
+    is_int "$mem_cached_kb" || mem_cached_kb=0
+    is_int "$mem_available_kb" || mem_available_kb=""
 
     # Convertir en MB
     local mem_total_mb=$((mem_total_kb / 1024))
@@ -990,6 +1047,16 @@ collect_swap_info() {
     local swap_total_kb=$(echo "$meminfo" | grep "^SwapTotal:" | awk '{print $2}')
     local swap_free_kb=$(echo "$meminfo" | grep "^SwapFree:" | awk '{print $2}')
 
+    if ! is_int "$swap_total_kb" || ! is_int "$swap_free_kb"; then
+        print_warning "Impossible de lire les informations de swap"
+        if [ -n "$HTML_OUTPUT" ]; then
+            html_section_start "Swap"
+            html_alert "warning" "Impossible de lire les informations de swap"
+            html_section_end
+        fi
+        return
+    fi
+
     local swap_total_mb=$((swap_total_kb / 1024))
     local swap_free_mb=$((swap_free_kb / 1024))
     local swap_used_mb=$((swap_total_mb - swap_free_mb))
@@ -1053,11 +1120,24 @@ collect_load_info() {
     local load5=$(echo "$loadavg" | awk '{print $2}')
     local load15=$(echo "$loadavg" | awk '{print $3}')
 
+    if ! is_num "$load1" || ! is_num "$load5" || ! is_num "$load15"; then
+        print_warning "Impossible de lire /proc/loadavg - section load ignoree"
+        if [ -n "$HTML_OUTPUT" ]; then
+            html_section_start "Load Average"
+            html_alert "warning" "Impossible de lire /proc/loadavg"
+            html_section_end
+        fi
+        return
+    fi
+    if ! is_int "$NB_CPUS" || [ "$NB_CPUS" -lt 1 ]; then
+        NB_CPUS=1
+    fi
+
     print_info "Load 1/5/15" "$load1 / $load5 / $load15"
     print_info "Nb CPUs" "$NB_CPUS"
 
-    # Calcul du ratio load/cpu
-    local ratio=$(echo "$load1 $NB_CPUS" | awk '{printf "%.2f", $1 / $2}')
+    # Calcul du ratio load/cpu (valeurs validees ci-dessus)
+    local ratio=$(awk -v l="$load1" -v n="$NB_CPUS" 'BEGIN {printf "%.2f", l / n}')
 
     local ratio_display="$ratio"
     local load_status="ok"
@@ -1968,9 +2048,21 @@ parse_arguments() {
     fi
 }
 
+cleanup() {
+    if [ -n "$WORK_DIR" ] && [ -d "$WORK_DIR" ]; then
+        rm -rf "$WORK_DIR"
+    fi
+}
+
 main() {
     # Parser les arguments
     parse_arguments "$@"
+
+    WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/linux-audit.XXXXXX") || {
+        print_error "Impossible de creer un repertoire temporaire"
+        exit 3
+    }
+    trap cleanup EXIT
 
     # Verifier si sshpass est disponible quand on utilise un mot de passe
     if [ -n "$SSH_PASSWORD" ]; then
@@ -2015,17 +2107,17 @@ main() {
     html_init "$REMOTE_HOSTNAME" "$(date '+%Y-%m-%d %H:%M:%S')"
 
     # Collecte des informations
-    collect_system_info
-    collect_cpu_info
-    collect_memory_info
-    collect_swap_info
-    collect_load_info
-    collect_disk_info
-    collect_network_info
-    collect_process_info
+    collect_system_info;  check_ssh_alive "informations systeme"
+    collect_cpu_info;     check_ssh_alive "CPU"
+    collect_memory_info;  check_ssh_alive "memoire"
+    collect_swap_info;    check_ssh_alive "swap"
+    collect_load_info;    check_ssh_alive "load average"
+    collect_disk_info;    check_ssh_alive "disques"
+    collect_network_info; check_ssh_alive "reseau"
+    collect_process_info; check_ssh_alive "processus"
 
     # Collecte SAR
-    collect_sar_data
+    collect_sar_data;     check_ssh_alive "SAR"
 
     # Synthese des alertes
     print_alert_summary
