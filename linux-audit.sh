@@ -44,7 +44,9 @@ REMOTE_USER="root"
 REMOTE_PORT="22"
 SSH_KEY=""
 SSH_PASSWORD=""
-SSH_OPTS="-o ConnectTimeout=10 -o StrictHostKeyChecking=no -o BatchMode=yes"
+# Arguments SSH: tableau (bash 3 compatible) construit par build_ssh_args,
+# pour que les chemins contenant des espaces restent un seul argument
+SSH_ARGS=()
 TIMESTAMP=$(date +%Y%m%d)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -142,6 +144,29 @@ add_alert_warning() {
     fi
 }
 
+# Construction des arguments SSH communs
+build_ssh_args() {
+    SSH_ARGS=(-o ConnectTimeout=10 -o StrictHostKeyChecking=no -p "$REMOTE_PORT")
+    if [ -z "$SSH_PASSWORD" ]; then
+        # Sans mot de passe: jamais de prompt interactif
+        SSH_ARGS=("${SSH_ARGS[@]}" -o BatchMode=yes)
+    fi
+    if [ -n "$SSH_KEY" ]; then
+        SSH_ARGS=("${SSH_ARGS[@]}" -i "$SSH_KEY")
+    fi
+}
+
+# Lance ssh avec les arguments communs (et sshpass en mode mot de passe).
+# sshpass -e: le mot de passe passe par l'environnement, pas par la ligne de
+# commande (invisible dans ps)
+run_ssh() {
+    if [ -n "$SSH_PASSWORD" ]; then
+        SSHPASS="$SSH_PASSWORD" sshpass -e ssh "${SSH_ARGS[@]}" "$@"
+    else
+        ssh "${SSH_ARGS[@]}" "$@"
+    fi
+}
+
 # Tests numeriques (les valeurs distantes ne sont jamais considerees comme sures)
 is_int() {
     case "$1" in
@@ -162,21 +187,10 @@ is_num() {
 # serait perdue. check_ssh_alive() interrompt ensuite l'audit.
 ssh_exec() {
     local cmd="$1"
-    local opts="$SSH_OPTS"
 
-    if [ -n "$SSH_KEY" ]; then
-        opts="$opts -i $SSH_KEY"
-    fi
-
-    if [ -n "$SSH_PASSWORD" ]; then
-        # Mode mot de passe: retirer BatchMode et utiliser sshpass
-        opts=$(echo "$opts" | sed 's/-o BatchMode=yes//')
-        # sshpass -e: le mot de passe passe par l'environnement, pas par la
-        # ligne de commande (invisible dans ps)
-        SSHPASS="$SSH_PASSWORD" sshpass -e ssh $opts -p "$REMOTE_PORT" "${REMOTE_USER}@${REMOTE_HOST}" "$cmd" 2>/dev/null
-    else
-        ssh $opts -p "$REMOTE_PORT" "${REMOTE_USER}@${REMOTE_HOST}" "$cmd" 2>/dev/null
-    fi
+    # "--" empeche un utilisateur ou un hote commencant par "-" d'etre
+    # interprete comme une option ssh
+    run_ssh -- "${REMOTE_USER}@${REMOTE_HOST}" "$cmd" 2>/dev/null
     local rc=$?
     if [ "$rc" -eq 255 ] && [ -n "$WORK_DIR" ]; then
         : > "$WORK_DIR/ssh_failed"
@@ -208,27 +222,7 @@ remote_cmd_exists() {
 
 # Test de connexion SSH
 test_ssh_connection() {
-    local opts="$SSH_OPTS"
-
-    if [ -n "$SSH_KEY" ]; then
-        opts="$opts -i $SSH_KEY"
-    fi
-
-    if [ -n "$SSH_PASSWORD" ]; then
-        # Mode mot de passe: retirer BatchMode et utiliser sshpass
-        opts=$(echo "$opts" | sed 's/-o BatchMode=yes//')
-        if SSHPASS="$SSH_PASSWORD" sshpass -e ssh $opts -p "$REMOTE_PORT" "${REMOTE_USER}@${REMOTE_HOST}" "echo 'OK'" >/dev/null 2>&1; then
-            return 0
-        else
-            return 1
-        fi
-    else
-        if ssh $opts -p "$REMOTE_PORT" "${REMOTE_USER}@${REMOTE_HOST}" "echo 'OK'" >/dev/null 2>&1; then
-            return 0
-        else
-            return 1
-        fi
-    fi
+    run_ssh -- "${REMOTE_USER}@${REMOTE_HOST}" "echo 'OK'" >/dev/null 2>&1
 }
 
 # Comparaison de nombres flottants (compatible bash 3.x)
@@ -510,8 +504,12 @@ html_table_row() {
     if [ -n "$class" ]; then
         class_attr=" class=\"${class}\""
     fi
-    local IFS='|'
-    for cell in $cells; do
+    # read -a plutot que "for cell in $cells": pas d'expansion glob sur les
+    # valeurs distantes (ex: "[kworker/0:1]" contre les fichiers du cwd local)
+    local cell_list
+    IFS='|' read -r -a cell_list <<< "$cells"
+    local cell
+    for cell in "${cell_list[@]}"; do
         cell_html="${cell_html}                    <td>$(html_escape "$cell")</td>
 "
     done
@@ -2046,6 +2044,21 @@ parse_arguments() {
         print_error "Hostname ou IP requis"
         usage
     fi
+
+    # Refuser les valeurs qui seraient lues comme des options par ssh
+    case "$REMOTE_USER" in
+        -*|*@*|'') print_error "Utilisateur SSH invalide: $REMOTE_USER"; usage ;;
+    esac
+    if ! is_int "$REMOTE_PORT" || [ "$REMOTE_PORT" -lt 1 ] || [ "$REMOTE_PORT" -gt 65535 ]; then
+        print_error "Port SSH invalide: $REMOTE_PORT"
+        usage
+    fi
+    if [ -n "$SSH_KEY" ] && [ ! -r "$SSH_KEY" ]; then
+        print_error "Cle SSH illisible: $SSH_KEY"
+        exit 1
+    fi
+
+    build_ssh_args
 }
 
 cleanup() {
