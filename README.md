@@ -75,7 +75,8 @@ Options:
   -u, --user USER         Utilisateur SSH (défaut: root)
   -p, --port PORT         Port SSH (défaut: 22)
   -P, --password [PWD]    Authentification par mot de passe (nécessite sshpass)
-                          Si PWD omis, un prompt demandera le mot de passe
+                          Si PWD omis: variable SSHPASS si définie, sinon prompt
+                          (PWD en argument déconseillé: visible dans ps)
   -i, --identity KEY      Fichier de clé SSH
   -h, --help              Affiche l'aide
 
@@ -97,7 +98,8 @@ Un rapport HTML est automatiquement généré: YYYYMMDD-Hostname-audit.html
 
 # Authentification par mot de passe (nécessite sshpass)
 ./linux-audit.sh -u admin -P serveur.example.com           # prompt interactif
-./linux-audit.sh -u admin -P 'secret' serveur.example.com  # mot de passe en argument
+SSHPASS='secret' ./linux-audit.sh -u admin -P serveur.example.com  # non interactif
+./linux-audit.sh -u admin -P 'secret' serveur.example.com  # déconseillé (visible dans ps)
 
 # Sauvegarder le rapport texte dans un fichier
 ./linux-audit.sh serveur.example.com > rapport-serveur.txt
@@ -231,10 +233,14 @@ Le script a été conçu pour être compatible avec:
 
 ## Codes de sortie
 
+Convention Nagios, exploitable en supervision ou en cron :
+
 | Code | Description |
 |------|-------------|
-| 0 | Succès |
-| 1 | Erreur de connexion SSH ou argument manquant |
+| 0 | Audit terminé, aucune alerte |
+| 1 | Audit terminé, au moins une alerte WARNING |
+| 2 | Audit terminé, au moins une alerte CRITIQUE |
+| 3 | Erreur : argument invalide, connexion SSH impossible ou perdue en cours d'audit (aucun rapport n'est alors généré), écriture du rapport impossible |
 
 ## Personnalisation
 
@@ -253,6 +259,11 @@ THRESH_IOWAIT_WARN=15
 THRESH_IOWAIT_CRIT=25
 THRESH_DISK_WARN=80
 THRESH_DISK_CRIT=90
+THRESH_DISKIO_UTIL_WARN=70   # I/O temps reel (%util)
+THRESH_DISKIO_UTIL_CRIT=90
+THRESH_DISKIO_AWAIT_WARN=50  # I/O temps reel (await, ms)
+THRESH_SAR_UTIL=80           # pics historiques SAR (%util)
+THRESH_SAR_AWAIT=30          # pics historiques SAR (await, ms)
 ```
 
 ## Sécurité
@@ -260,9 +271,12 @@ THRESH_DISK_CRIT=90
 - **Aucun privilège root requis**, ni sur la machine locale ni sur la machine cible.
   Le script peut être lancé par n'importe quel utilisateur ayant accès SSH au serveur.
   L'utilisateur SSH par défaut est `root` mais peut être remplacé par tout compte via `-u`.
-- Le script utilise `BatchMode=yes` pour SSH (pas de prompt interactif)
-- `StrictHostKeyChecking=no` est utilisé (attention en environnement sensible, modifier si nécessaire)
-- Aucune donnée sensible n'est stockée localement hormis le fichier SAR
+- Le script utilise `BatchMode=yes` pour SSH en authentification par clé (pas de prompt interactif)
+- `StrictHostKeyChecking=accept-new` : la clé d'un hôte inconnu est enregistrée, une clé **modifiée est refusée** (repli sur `no` avec avertissement pour OpenSSH < 7.6)
+- Une seule connexion SSH multiplexée (`ControlMaster`) est ouverte pour tout l'audit, puis fermée
+- Les commandes distantes sont exécutées par `sh` (quel que soit le shell de login) en locale `C`
+- Le rapport HTML et l'export SAR sont créés en mode `0600` (`umask 077`) ; toutes les données distantes sont échappées avant insertion dans le HTML
+- Aucune donnée sensible n'est stockée localement hormis le rapport et le fichier SAR
 - Recommandation: utiliser des clés SSH plutôt que des mots de passe
 
 ## Dépannage

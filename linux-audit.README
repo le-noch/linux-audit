@@ -61,6 +61,8 @@ Usage: linux-audit.sh [OPTIONS] <hostname_ou_ip>
 Options:
   -u, --user USER     Utilisateur SSH (defaut: root)
   -p, --port PORT     Port SSH (defaut: 22)
+  -P, --password [PWD] Authentification par mot de passe (necessite sshpass)
+                      Si PWD omis: variable SSHPASS si definie, sinon prompt
   -i, --identity KEY  Fichier de cle SSH
   -h, --help          Affiche l'aide
 
@@ -173,8 +175,12 @@ Le script a ete concu pour etre compatible avec:
 
 CODES DE SORTIE
 ---------------
-  0  - Succes
-  1  - Erreur de connexion SSH ou argument manquant
+  Convention Nagios:
+  0  - Audit termine, aucune alerte
+  1  - Audit termine, au moins une alerte WARNING
+  2  - Audit termine, au moins une alerte CRITIQUE
+  3  - Erreur: argument invalide, connexion SSH impossible ou perdue
+       (aucun rapport genere), ecriture du rapport impossible
 
 PERSONNALISATION
 ----------------
@@ -193,13 +199,22 @@ debut du script:
   THRESH_IOWAIT_CRIT=25
   THRESH_DISK_WARN=80
   THRESH_DISK_CRIT=90
+  THRESH_DISKIO_UTIL_WARN=70   # I/O temps reel (%util)
+  THRESH_DISKIO_UTIL_CRIT=90
+  THRESH_DISKIO_AWAIT_WARN=50  # I/O temps reel (await, ms)
+  THRESH_SAR_UTIL=80           # pics historiques SAR (%util)
+  THRESH_SAR_AWAIT=30          # pics historiques SAR (await, ms)
 
 SECURITE
 --------
-  - Le script utilise BatchMode=yes pour SSH (pas de prompt interactif)
-  - StrictHostKeyChecking=no est utilise (attention en environnement
-    sensible, modifier si necessaire)
-  - Aucune donnee sensible n'est stockee localement hormis le fichier SAR
+  - Le script utilise BatchMode=yes pour SSH en authentification par cle
+    (pas de prompt interactif)
+  - StrictHostKeyChecking=accept-new: une cle d'hote modifiee est refusee
+    (repli sur "no" avec avertissement pour OpenSSH < 7.6)
+  - Une seule connexion SSH multiplexee (ControlMaster) pour tout l'audit
+  - Rapport HTML et export SAR crees en mode 0600 (umask 077)
+  - Aucune donnee sensible n'est stockee localement hormis le rapport et
+    le fichier SAR
   - Recommandation: utiliser des cles SSH plutot que des mots de passe
 
 DEPANNAGE

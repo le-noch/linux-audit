@@ -43,9 +43,12 @@ Specifie le fichier de cle privee SSH a utiliser pour l'authentification.
 .BR \-P ", " \-\-password " [" \fIPWD\fR ]
 Authentification par mot de passe (necessite
 .BR sshpass ).
-Si \fIPWD\fR est omis, un prompt interactif demandera le mot de passe.
-Si \fIPWD\fR est fourni en argument, il est utilise directement
-(attention a la visibilite dans l'historique shell).
+Si \fIPWD\fR est omis, le mot de passe est lu dans la variable
+d'environnement \fBSSHPASS\fR si elle est definie, sinon demande par un
+prompt interactif.
+Fournir \fIPWD\fR en argument est deconseille: il est visible dans
+.BR ps (1)
+et dans l'historique du shell.
 .TP
 .BR \-h ", " \-\-help
 Affiche l'aide et quitte.
@@ -190,7 +193,7 @@ Authentification par mot de passe (necessite sshpass):
 .RS
 .nf
 $ linux-audit.sh -u admin -P serveur.example.com
-$ linux-audit.sh -u admin -P 'secret' serveur.example.com
+$ SSHPASS='secret' linux-audit.sh -u admin -P serveur.example.com
 .fi
 .RE
 .PP
@@ -257,15 +260,31 @@ Le script detecte automatiquement le chemin des fichiers SAR:
 /var/log/sysstat/ (Debian, Ubuntu)
 .SH CODES DE SORTIE
 .TP
+Convention Nagios:
+.TP
 .B 0
-Succes. L'audit s'est termine normalement.
+Audit termine, aucune alerte.
 .TP
 .B 1
-Erreur. Connexion SSH impossible ou argument obligatoire manquant.
+Audit termine, au moins une alerte WARNING.
+.TP
+.B 2
+Audit termine, au moins une alerte CRITIQUE.
+.TP
+.B 3
+Erreur: argument invalide, connexion SSH impossible ou perdue en cours
+d'audit (aucun rapport n'est alors genere), ecriture du rapport impossible.
 .SH ENVIRONNEMENT
 .TP
 .B SSH_AUTH_SOCK
 Utilise par l'agent SSH pour l'authentification par cle.
+.TP
+.B SSHPASS
+Mot de passe SSH utilise avec \fB\-P\fR sans valeur (evite le prompt
+et l'exposition dans la ligne de commande).
+.TP
+.B TMPDIR
+Repertoire du dossier de travail temporaire (socket de multiplexage SSH).
 .SH PREREQUIS
 .SS Machine cliente
 .IP \(bu 2
@@ -278,7 +297,8 @@ gzip
 sshpass (optionnel, requis uniquement pour l'option \fB\-P\fR)
 .SS Serveur audite
 .IP \(bu 2
-bash
+sh (POSIX): les commandes sont executees via \fBsh \-s\fR, quel que soit
+le shell de login de l'utilisateur
 .IP \(bu 2
 Acces SSH configure
 .IP \(bu 2
@@ -319,6 +339,11 @@ THRESH_IOWAIT_WARN=15
 THRESH_IOWAIT_CRIT=25
 THRESH_DISK_WARN=80
 THRESH_DISK_CRIT=90
+THRESH_DISKIO_UTIL_WARN=70   # I/O temps reel (%util)
+THRESH_DISKIO_UTIL_CRIT=90
+THRESH_DISKIO_AWAIT_WARN=50  # I/O temps reel (await, ms)
+THRESH_SAR_UTIL=80           # pics historiques SAR (%util)
+THRESH_SAR_AWAIT=30          # pics historiques SAR (await, ms)
 .fi
 .RE
 .SH SECURITE
@@ -330,10 +355,17 @@ L'utilisateur SSH par defaut est
 mais peut etre remplace par tout compte via l'option
 .BR \-u .
 .IP \(bu 2
-Le script utilise BatchMode=yes pour SSH (pas de prompt interactif)
+Le script utilise BatchMode=yes pour SSH en authentification par cle
+(pas de prompt interactif)
 .IP \(bu 2
-StrictHostKeyChecking=no est utilise par defaut. Dans un environnement
-sensible, il est recommande de modifier cette option.
+StrictHostKeyChecking=accept-new: la cle d'un hote inconnu est
+enregistree, une cle modifiee est refusee (repli sur "no" avec
+avertissement pour les clients OpenSSH < 7.6).
+.IP \(bu 2
+Une seule connexion SSH multiplexee (ControlMaster) est utilisee pour
+tout l'audit.
+.IP \(bu 2
+Le rapport HTML et l'export SAR sont crees en mode 0600 (umask 077).
 .IP \(bu 2
 Il est recommande d'utiliser l'authentification par cle SSH plutot
 que par mot de passe.
