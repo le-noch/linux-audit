@@ -93,7 +93,9 @@ usage() {
     echo "  -u, --user USER       Utilisateur SSH (defaut: root)"
     echo "  -p, --port PORT       Port SSH (defaut: 22)"
     echo "  -P, --password [PWD]  Authentification par mot de passe (necessite sshpass)"
-    echo "                        Si PWD omis, un prompt demandera le mot de passe"
+    echo "                        Si PWD omis: variable d'environnement SSHPASS si"
+    echo "                        definie, sinon prompt interactif. PWD en argument est"
+    echo "                        deconseille (visible dans ps et l'historique du shell)"
     echo "  -i, --identity KEY    Fichier de cle SSH"
     echo "  -h, --help            Affiche cette aide"
     echo ""
@@ -102,7 +104,7 @@ usage() {
     echo "  $0 -u admin -p 2222 192.168.1.100"
     echo "  $0 -u admin -i ~/.ssh/id_rsa serveur.example.com"
     echo "  $0 -u admin -P serveur.example.com          # Prompt pour le mot de passe"
-    echo "  $0 -u admin -P 'secret' serveur.example.com # Mot de passe en argument"
+    echo "  SSHPASS='secret' $0 -u admin -P serveur.example.com  # Non interactif"
     echo ""
     echo "Un rapport HTML est automatiquement genere: YYYYMMDD-Hostname-audit.html"
     exit 1
@@ -158,9 +160,20 @@ add_alert_warning() {
     fi
 }
 
+# Politique de verification de la cle d'hote: accept-new (OpenSSH >= 7.6)
+# enregistre la cle d'un hote inconnu mais REFUSE une cle qui a change
+# (attaque MITM); "no" accepterait silencieusement les deux.
+SSH_HOSTKEY_POLICY="accept-new"
+detect_hostkey_policy() {
+    if ! ssh -o StrictHostKeyChecking=accept-new -G localhost >/dev/null 2>&1; then
+        SSH_HOSTKEY_POLICY="no"
+        print_warning "Client OpenSSH < 7.6: cles d'hote acceptees sans verification (StrictHostKeyChecking=no)"
+    fi
+}
+
 # Construction des arguments SSH communs
 build_ssh_args() {
-    SSH_ARGS=(-o ConnectTimeout=10 -o StrictHostKeyChecking=no -p "$REMOTE_PORT")
+    SSH_ARGS=(-o ConnectTimeout=10 -o StrictHostKeyChecking="$SSH_HOSTKEY_POLICY" -p "$REMOTE_PORT")
     if [ -z "$SSH_PASSWORD" ]; then
         # Sans mot de passe: jamais de prompt interactif
         SSH_ARGS=("${SSH_ARGS[@]}" -o BatchMode=yes)
@@ -272,9 +285,16 @@ close_ssh_master() {
     fi
 }
 
-# Test de connexion SSH
+# Test de connexion SSH: en cas d'echec, les messages de ssh (cle d'hote
+# modifiee, authentification refusee...) sont affiches a l'utilisateur
 test_ssh_connection() {
-    run_ssh -- "${REMOTE_USER}@${REMOTE_HOST}" "echo 'OK'" >/dev/null 2>&1
+    local err
+    err=$(run_ssh -- "${REMOTE_USER}@${REMOTE_HOST}" "echo 'OK'" 2>&1 >/dev/null)
+    local rc=$?
+    if [ "$rc" -ne 0 ] && [ -n "$err" ]; then
+        echo "$err" | sed 's/^/  ssh: /' | head -20
+    fi
+    return $rc
 }
 
 # Comparaison de nombres flottants (compatible bash 3.x)
@@ -303,8 +323,8 @@ html_append() {
 }
 
 html_escape() {
-    local text="$1"
-    echo "$text" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g'
+    # printf et non echo: une valeur "-n" ou "-e" ne doit pas etre prise pour une option
+    printf '%s\n' "$1" | sed "s/&/\\&amp;/g; s/</\\&lt;/g; s/>/\\&gt;/g; s/\"/\\&quot;/g; s/'/\\&#39;/g"
 }
 
 html_init() {
@@ -522,6 +542,10 @@ html_progress_row() {
     local percent="$3"
     local status="$4"  # ok, warn, crit
     local escaped_value=$(html_escape "$value")
+    # percent finit dans un attribut style: uniquement un entier 0-100
+    is_int "$percent" || percent=0
+    [ "$percent" -gt 100 ] && percent=100
+    case "$status" in ok|warn|crit) ;; *) status="ok" ;; esac
     html_append "                <div class=\"info-row\" style=\"flex-direction: column;\">
                     <div style=\"display: flex; justify-content: space-between;\">
                         <span class=\"info-label\">${label}</span>
@@ -1779,15 +1803,21 @@ parse_arguments() {
                 shift 2
                 ;;
             -P|--password)
-                # Verifier si un mot de passe est fourni en argument
-                if [ -n "$2" ] && [ "${2#-}" = "$2" ]; then
-                    # $2 existe et ne commence pas par '-'
+                # $2 est un mot de passe s'il ne commence pas par '-' et que ce
+                # n'est pas le hostname: "-P serveur" (dernier argument, hote
+                # pas encore vu) demande le mot de passe au lieu d'avaler l'hote
+                if [ -n "$2" ] && [ "${2#-}" = "$2" ] && { [ -n "$REMOTE_HOST" ] || [ $# -gt 2 ]; }; then
                     SSH_PASSWORD="$2"
                     shift 2
+                elif [ -n "$SSHPASS" ]; then
+                    # Mot de passe fourni par l'environnement (non interactif)
+                    SSH_PASSWORD="$SSHPASS"
+                    shift 1
                 else
                     # Pas de mot de passe fourni, demander interactivement
+                    # IFS= et -r: espaces et antislashs conserves tels quels
                     printf "Password: "
-                    read -s SSH_PASSWORD
+                    IFS= read -rs SSH_PASSWORD
                     echo ""
                     shift 1
                 fi
@@ -1824,6 +1854,7 @@ parse_arguments() {
         exit 1
     fi
 
+    detect_hostkey_policy
     build_ssh_args
 }
 
@@ -1835,6 +1866,10 @@ cleanup() {
 }
 
 main() {
+    # Rapports et export SAR lisibles uniquement par l'utilisateur: ils
+    # contiennent des informations d'infrastructure sensibles
+    umask 077
+
     # Parser les arguments
     parse_arguments "$@"
 
