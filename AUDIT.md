@@ -3,6 +3,10 @@
 **Révision auditée :** `c185a62` (v1.0.0, 2046 lignes), après le commit de correctifs `d5539c7`.
 Les numéros de ligne renvoient à cette révision.
 
+> **État actuel : tous les constats ouverts sont corrigés** (commits `9073cd8` → `6f95253`,
+> dans l'ordre du plan de remédiation de la section 3). Voir la section 0 pour le détail et la
+> validation. Les sections 1 et 2 décrivent l'état *avant* ces correctifs.
+
 Méthode : lecture intégrale du script, puis reproduction locale des points douteux (les points
 marqués *reproduit* ont été rejoués en bash). Ce document remplace l'audit précédent, qui
 portait sur la version d'avant `d5539c7` : ses numéros de ligne ne correspondaient plus au
@@ -11,6 +15,36 @@ code et il listait comme ouverts des points déjà corrigés.
 Modèle de menace retenu : **le serveur audité peut être compromis**. Toute chaîne renvoyée par
 SSH (`hostname`, `ps`, `df`, `ip`, SAR…) peut donc être contrôlée par un attaquant, et le
 rapport HTML est ouvert ensuite dans le navigateur de l'auditeur.
+
+---
+
+## 0. Correctifs appliqués
+
+| Étape | Commit | Constats corrigés |
+|-------|--------|-------------------|
+| 1. Robustesse des valeurs vides | `9073cd8` | H11, H12, H13, M14 |
+| 2. Quoting et glob | `91c7f26` | H3, M1, N6 |
+| 3. Fausses alertes | `139ebdd` | N2, H4, M7, N1, et aussi H2, H7, M2, M8 (lscpu), M9, L7 |
+| 4. Charge et performances | `eeb8847` | N3, N5, N11, et aussi M4, M8 (global), M10, L2, L3, L4, L5, N8, N9, N13, N14 |
+| 5. Sécurité de l'opérateur | `1084245` | H6, H9, H10, M11, N4, L9, et aussi M5 |
+| 6. Exploitabilité | `1e5a891` | N7, L6, M13 |
+| 7. Points restants | `6f95253` | M3, L1, L8, N12, et N10 (seuils regroupés dans la section 1 du script dès les étapes 3 et 4) |
+
+Bug supplémentaire trouvé en cours de route et corrigé dans `6f95253` : le badge du ratio load
+générait les classes `badge-crit`/`badge-warn`, absentes du CSS (badge affiché sans style).
+
+**Validation** (sshd local, clé et mot de passe, données SAR générées par `sadc`) :
+- coupure SSH en cours d'audit : arrêt en code 3 sans rapport, avec la section où la coupure a été détectée ;
+- clé dont le chemin contient une espace, `-u '-oProxyCommand=…'` refusé, cellule `[k1]` non expansée ;
+- compte non-root avec shell de login `tcsh`, et mot de passe `Pw\csh 2` via prompt, via `SSHPASS` et en argument ;
+- clé d'hôte modifiée : connexion refusée avec le message de ssh ; hôte inconnu : clé enregistrée ;
+- analyse SAR validée sur sysstat 12 (`DEV` en dernière colonne avec `-p`) et sur le format
+  sysstat 9 (AM/PM, `LINUX RESTART`, hostname `DEVbox` dans la bannière) ;
+- fallback `/proc/diskstats` comparé à iostat sous charge d'écriture : mêmes débits, await et %util ;
+- codes de sortie 0/1/2/3, rapport non inscriptible détecté, rapport et export en mode `0600` ;
+- durée d'un audit : 16,7 s → 8,4 s, une seule authentification ;
+- `shellcheck -S warning` : 147 → 1 avertissement hors SC2155 (le `printf '%80s'` voulu de `print_line`) ;
+- rendu du rapport HTML vérifié dans Chromium headless.
 
 ---
 
